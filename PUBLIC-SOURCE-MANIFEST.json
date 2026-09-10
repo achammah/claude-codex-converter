@@ -22,11 +22,11 @@
     },
     "README.md": {
       "mode": 420,
-      "sha256": "37863b7edd1b3fed6a079214503b97f5fe14f2766592a5805949a18c7de8bded"
+      "sha256": "1f96b70ee81b7050991772ad45f6472d6c6135020c2c659db4bd58bd6d923f1e"
     },
     "RELEASE-PIPELINE.md": {
       "mode": 420,
-      "sha256": "9a6b7ca15c5e6481b0635f86246023a10f962a596b542928401db6db0539a17a"
+      "sha256": "e7c220c7e46100a2b2f6845c48129caeb6e612a37a2057fca293e37e59fb19a0"
     },
     "build.py": {
       "mode": 420,
@@ -90,7 +90,7 @@
     },
     "converter/managed_update.py": {
       "mode": 420,
-      "sha256": "849ca05da8919419d478de55a04bbae920588fe8320cf54582248b65c6445469"
+      "sha256": "354242d1a64f35d5737fe435f319f313059be25d32361d6d993192d7e46ff462"
     },
     "converter/native_import.py": {
       "mode": 420,
@@ -106,7 +106,7 @@
     },
     "converter/protocol.py": {
       "mode": 420,
-      "sha256": "78a39d25157eed1324ec3b9fb20daac438f23c8f36477eaee9d798c155b5f89f"
+      "sha256": "c41a9499d16a2ca0e3be0324329a8c6dd2ab9040a119174ad15072027fe67396"
     },
     "converter/release_pipeline.py": {
       "mode": 420,
@@ -122,7 +122,7 @@
     },
     "converter/setup.py": {
       "mode": 420,
-      "sha256": "9744fb8c38e8d74fb91f91ad271ce0f5778e1050e63e5aa8cf859f36714aecff"
+      "sha256": "ea0fe111ea9167fcde1288590dc470c860cff923d9408fa4bb91af3dbdf92a5f"
     },
     "converter/status_line.py": {
       "mode": 420,
@@ -154,7 +154,7 @@
     },
     "native/manifests/0.154.0/README.md": {
       "mode": 420,
-      "sha256": "5b1be8a715bc33d2c40ff8e5470bba86386ec6df43ad64de91e6b86ecb7a7f94"
+      "sha256": "f692776a64e476c409eb8666148809e356b1a298baa49a9a9f54d8d1de37c105"
     },
     "native/manifests/0.154.0/managed-updater.patch": {
       "mode": 420,
@@ -198,7 +198,7 @@
     },
     "scripts/export_public.py": {
       "mode": 420,
-      "sha256": "d86d4c665ce25677da5a03b76329aca33a6349b670ab4d4406ec8efb2d31924a"
+      "sha256": "1ed0516254ff303b0b6d860efa6eeee4cac5122adeb2e1e42b78440aa1b09a0e"
     },
     "scripts/release_runner.py": {
       "mode": 420,
@@ -318,7 +318,7 @@
     },
     "tests/test_managed_update.py": {
       "mode": 420,
-      "sha256": "ed56d1920a5b9138963c6e23536f2d7d9fc00ebdd81356ad959fc328a2226e6e"
+      "sha256": "672c9f8a42ac2ce13f423d7e7b4465b600437b943c1ade5fa005576bb2301271"
     },
     "tests/test_native_runtime.py": {
       "mode": 420,
@@ -335,6 +335,10 @@
     "tests/test_protocol_async.py": {
       "mode": 420,
       "sha256": "31428f5b0381606321f354707e7b61ebe996e3638b4e21fa44346233d3662dac"
+    },
+    "tests/test_protocol_streaming.py": {
+      "mode": 420,
+      "sha256": "112f178107efea161ad5a1bfa51c9f3bdeadaadfcaebd170c477c637dc57cbd3"
     },
     "tests/test_question_regressions.py": {
       "mode": 420,
@@ -358,7 +362,7 @@
     },
     "tests/test_setup.py": {
       "mode": 420,
-      "sha256": "cef25b7f554424ecec0ce9e99f905aa87371b8c75dfdcd950b35e1f1692ff3c9"
+      "sha256": "0b559021e6cb10d13d2c074b2d4dc350127b95ce25cef91fb4a0d34ef2e9ff56"
     },
     "tests/test_source_activation.py": {
       "mode": 420,

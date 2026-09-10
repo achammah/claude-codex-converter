@@ -80,6 +80,18 @@ Fetch failures remain errors; they do not silently report the bundled release as
 current. An explicit updater `--source` overrides one invocation. Updates preserve
 the installation's configured feed, and rollback restores its previous metadata.
 
+New `setup` installs default to the public project's feed:
+`https://github.com/achammah/claude-codex-converter/releases/latest/download/compatible-releases.json`.
+`setup --update-feed HTTPS_URL` overrides this default. Plan-only mode records the
+URL without fetching it; offline setup conversion remains independent of the feed.
+
+Older managed installations without a feed can use the current converter's
+`update update --installation MANIFEST --source HTTPS_URL --adopt-feed` command.
+The explicit URL becomes the default only inside a successful atomic package
+replacement. If no newer compatible package exists, `feedAdopted` is false and
+metadata is unchanged. Failure leaves the prior package intact, and rollback
+restores its original feed policy. A plain `--source` remains a one-time override.
+
 ## GitHub Actions service
 
 The standalone repository includes `.github/workflows/compatible-codex.yml`.

@@ -253,66 +253,76 @@ def transcript_view(path, data):
         return None
     source = Path(path)
     try:
-        raw_lines = source.read_text().splitlines()
+        stream = source.open()
     except OSError:
         health(data, 'transcript-unreadable', {'path_hash': atom(path)})
         return None
-    records = []
-    unknown = set()
-    saw_response_user = False
-    event_users = []
-    for line in raw_lines:
-        try:
-            row = json.loads(line)
-        except ValueError:
-            unknown.add('invalid-json'); continue
-        if not isinstance(row, dict):
-            unknown.add('non-object'); continue
-        kind = row.get('type')
-        if kind in ('user', 'assistant') and isinstance(row.get('message'), dict):
-            records.append(row); continue
-        payload = row.get('payload')
-        if not isinstance(payload, dict):
-            unknown.add(str(kind)); continue
-        timestamp = row.get('timestamp')
-        base = {'timestamp': timestamp}
-        if kind == 'response_item':
-            typ = payload.get('type')
-            if typ == 'message':
-                role = payload.get('role')
-                if role not in ('user', 'assistant'):
-                    continue
-                saw_response_user |= role == 'user'
-                blocks = []
-                for b in payload.get('content', []):
-                    if isinstance(b, dict) and b.get('type') in ('input_text', 'output_text', 'text'):
-                        blocks.append({'type': 'text', 'text': b.get('text', '')})
-                records.append({**base, 'type': role, 'message': {'role': role, 'content': blocks}})
-            elif typ in ('function_call', 'custom_tool_call'):
-                args = payload.get('arguments', payload.get('input', {}))
-                if isinstance(args, str):
-                    try:
-                        args = json.loads(args)
-                    except ValueError:
-                        args = {'command': args}
-                d = normalize({'tool_name': payload.get('name'), 'tool_input': args})
-                records.append({**base, 'type': 'assistant', 'message': {'role': 'assistant', 'content': [
-                    {'type': 'tool_use', 'id': payload.get('call_id'), 'name': d['tool_name'], 'input': d['tool_input']}]}})
-            elif typ in ('function_call_output', 'custom_tool_call_output'):
-                records.append({**base, 'type': 'user', 'message': {'role': 'user', 'content': [
-                    {'type': 'tool_result', 'tool_use_id': payload.get('call_id'), 'content': payload.get('output', '')}]}})
-            elif typ not in ('reasoning', 'web_search_call', 'compaction'):
-                unknown.add('response_item/' + str(typ))
-        elif kind == 'event_msg':
-            if payload.get('type') == 'user_message':
-                event_users.append({**base, 'type': 'user', 'message': {'role': 'user', 'content': payload.get('message', '')}})
-        elif kind not in ('session_meta', 'turn_context', 'compacted'):
-            unknown.add(str(kind))
+    # Keep only normalized records, never a second complete raw transcript.
+    # Per-line splitlines retains the previous handling of Unicode separators.
+    try:
+        with stream:
+            lines = (part for raw in stream for part in raw.splitlines())
+            records = []
+            unknown = set()
+            saw_response_user = False
+            event_users = []
+            line_count = 0
+            for line in lines:
+                line_count += 1
+                try:
+                    row = json.loads(line)
+                except ValueError:
+                    unknown.add('invalid-json'); continue
+                if not isinstance(row, dict):
+                    unknown.add('non-object'); continue
+                kind = row.get('type')
+                if kind in ('user', 'assistant') and isinstance(row.get('message'), dict):
+                    records.append(row); continue
+                payload = row.get('payload')
+                if not isinstance(payload, dict):
+                    unknown.add(str(kind)); continue
+                timestamp = row.get('timestamp')
+                base = {'timestamp': timestamp}
+                if kind == 'response_item':
+                    typ = payload.get('type')
+                    if typ == 'message':
+                        role = payload.get('role')
+                        if role not in ('user', 'assistant'):
+                            continue
+                        saw_response_user |= role == 'user'
+                        blocks = []
+                        for b in payload.get('content', []):
+                            if isinstance(b, dict) and b.get('type') in ('input_text', 'output_text', 'text'):
+                                blocks.append({'type': 'text', 'text': b.get('text', '')})
+                        records.append({**base, 'type': role, 'message': {'role': role, 'content': blocks}})
+                    elif typ in ('function_call', 'custom_tool_call'):
+                        args = payload.get('arguments', payload.get('input', {}))
+                        if isinstance(args, str):
+                            try:
+                                args = json.loads(args)
+                            except ValueError:
+                                args = {'command': args}
+                        d = normalize({'tool_name': payload.get('name'), 'tool_input': args})
+                        records.append({**base, 'type': 'assistant', 'message': {'role': 'assistant', 'content': [
+                            {'type': 'tool_use', 'id': payload.get('call_id'), 'name': d['tool_name'], 'input': d['tool_input']}]}})
+                    elif typ in ('function_call_output', 'custom_tool_call_output'):
+                        records.append({**base, 'type': 'user', 'message': {'role': 'user', 'content': [
+                            {'type': 'tool_result', 'tool_use_id': payload.get('call_id'), 'content': payload.get('output', '')}]}})
+                    elif typ not in ('reasoning', 'web_search_call', 'compaction'):
+                        unknown.add('response_item/' + str(typ))
+                elif kind == 'event_msg':
+                    if payload.get('type') == 'user_message':
+                        event_users.append({**base, 'type': 'user', 'message': {'role': 'user', 'content': payload.get('message', '')}})
+                elif kind not in ('session_meta', 'turn_context', 'compacted'):
+                    unknown.add(str(kind))
+    except OSError:
+        health(data, 'transcript-unreadable', {'path_hash': atom(path)})
+        return None
     if not saw_response_user and event_users:
         records.extend(event_users)
         records.sort(key=lambda r: str(r.get('timestamp') or ''))
     if unknown:
-        health(data, 'transcript-unknown-records', {'types': sorted(unknown), 'count': len(raw_lines)})
+        health(data, 'transcript-unknown-records', {'types': sorted(unknown), 'count': line_count})
     if not records:
         return None
     folder = STATE / 'transcripts' / atom(data.get('session_id'))

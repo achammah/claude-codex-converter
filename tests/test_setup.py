@@ -46,7 +46,7 @@ class SetupTests(unittest.TestCase):
                  'patch_sha256': native_runtime.sha256(b'synthetic updater patch'),
                  'feature_marker': native_runtime.UPDATE_FEATURE_MARKER}]}))
 
-    def call_setup(self, *, fail_project=False, plan_only=False, partial_project=False, fail_native=False):
+    def call_setup(self, *, fail_project=False, plan_only=False, partial_project=False, fail_native=False, extra=()):
         events = []
         def native_apply(*args):
             events.append('native')
@@ -66,14 +66,15 @@ class SetupTests(unittest.TestCase):
                 mock.patch.object(setup, 'native_assets', return_value=(self.root/'manifest.json', self.root/'patch')), \
                 mock.patch.object(native_runtime, 'acquire_source', return_value=self.root/'source'), \
                 mock.patch.object(native_runtime, 'provision_toolchain', return_value={}), \
-                mock.patch.object(native_runtime, 'plan_install', return_value={}), \
+                mock.patch.object(native_runtime, 'plan_install', return_value={}) as plan_call, \
                 mock.patch.object(native_runtime, 'apply_install', side_effect=native_apply), \
                 mock.patch.object(native_runtime, 'rollback_install', side_effect=lambda *a: events.append('rollback')), \
                 mock.patch.object(setup.install, 'apply', side_effect=project_apply), \
                 contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
             result = setup.main([str(self.project), '--work-dir', str(self.work),
                                  '--global-settings', str(self.global_settings),
-                                 *(['--plan-only'] if plan_only else [])])
+                                 *(['--plan-only'] if plan_only else []), *extra])
+            self.plan_call = plan_call
         return result, events
 
     def test_native_install_precedes_project_config_activation(self):
@@ -142,6 +143,22 @@ class SetupTests(unittest.TestCase):
         self.assertEqual((self.work/'native/patch').read_text(), 'synthetic patch')
         self.assertEqual((self.work/'native/question.patch').read_text(), 'synthetic question patch')
         self.assertFalse((self.work/'project-diagnostics.json').exists())
+
+    def test_new_setup_defaults_to_public_feed_without_fetching_it(self):
+        with mock.patch.object(native_runtime.urllib.request,'urlopen',side_effect=AssertionError('feed fetch during planning')):
+            self.assertEqual(self.call_setup(plan_only=True),(0,[]))
+        self.assertEqual(self.plan_call.call_args.kwargs['update_feed'],setup.DEFAULT_UPDATE_FEED)
+        self.assertFalse((self.project/'.codex').exists())
+        self.assertFalse(any('trust' in key for key in self.plan_call.call_args.kwargs))
+
+    def test_setup_explicit_feed_override_reaches_plan(self):
+        url='https://custom.example.invalid/releases.json'
+        self.assertEqual(self.call_setup(plan_only=True,extra=['--update-feed',url]),(0,[]))
+        self.assertEqual(self.plan_call.call_args.kwargs['update_feed'],url)
+
+    def test_setup_invalid_feed_rejected_before_staging(self):
+        self.assertEqual(self.call_setup(plan_only=True,extra=['--update-feed','http://example.invalid/feed']),(1,[]))
+        self.assertFalse(self.work.exists());self.plan_call.assert_not_called()
 
     def test_off_path_destination_is_not_claimed_as_plain_codex(self):
         with mock.patch.dict(os.environ, {'PATH': str(self.bin)}):

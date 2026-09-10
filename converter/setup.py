@@ -10,6 +10,7 @@ from . import install
 from . import doctor
 from .claude_to_codex import Converter
 
+DEFAULT_UPDATE_FEED = 'https://github.com/achammah/claude-codex-converter/releases/latest/download/compatible-releases.json'
 
 def runtime_directory(explicit=None):
     """Choose a real executable destination already reachable as plain codex."""
@@ -47,6 +48,7 @@ def main(argv=None):
     parser.add_argument('--work-dir', type=Path, required=True, help='New persistent directory for source, build, plans and rollback receipts')
     parser.add_argument('--source-tree', type=Path, help='Existing clean pinned Codex source checkout; otherwise fetched automatically')
     parser.add_argument('--plan-only', action='store_true', help='Prepare reviewable plans without applying project or binary changes')
+    parser.add_argument('--update-feed', default=DEFAULT_UPDATE_FEED, help='HTTPS compatible-release feed for the installed runtime; defaults to the public converter release feed')
     parser.add_argument('--global-settings', type=Path)
     parser.add_argument('--include-user-resources', action='store_true')
     parser.add_argument('--include-external-hooks', action='store_true')
@@ -55,6 +57,7 @@ def main(argv=None):
     args = parser.parse_args(argv)
     try:
         from . import native_runtime
+        native_runtime._validate_update_feed(args.update_feed)
         metadata, patch = native_assets()
         target = args.project.expanduser().resolve()
         if target.name == '.claude':
@@ -88,7 +91,7 @@ def main(argv=None):
         runtime_plan = work / 'runtime-plan.json'
         native_runtime.plan_install(source_root=source, patch_path=patch,
             metadata_path=metadata, install_dir=destination, plan_path=runtime_plan,
-            build_root=work / 'codex-build')
+            build_root=work / 'codex-build', update_feed=args.update_feed)
         if args.plan_only:
             print(json.dumps({'state': 'planned', 'project_plan': str(project_plan),
                               'runtime_plan': str(runtime_plan)}))

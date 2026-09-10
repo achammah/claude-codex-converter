@@ -91,6 +91,48 @@ class ManagedUpdateTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError,'HTTPS'):
             update.stage_manager(root,metadata,target=self.target,runtime_source=Path(runtime.__file__),release_id='staged',feed_url='http://example.invalid/feed')
 
+    def test_adopt_feed_requires_explicit_safe_https_source(self):
+        for source in [None,'/tmp/feed.json','http://example.invalid/feed','https://user:secret@example.invalid/feed']:
+            with self.subTest(source=source),patch.object(update,'selection') as select:
+                with self.assertRaisesRegex(ValueError,'HTTPS'):update.update(self.installation,source,adopt_feed=True)
+                select.assert_not_called()
+
+    def test_adopt_feed_current_does_not_change_metadata(self):
+        before=self.installation.read_bytes();selected=update.selection(self.installation)
+        with patch.object(update,'selection',return_value=selected):
+            result=update.update(self.installation,'https://example.invalid/feed',adopt_feed=True)
+        self.assertEqual(result['state'],'current');self.assertFalse(result['feedAdopted'])
+        self.assertEqual(self.installation.read_bytes(),before)
+
+    def test_adopt_feed_update_rollback_and_retry(self):
+        source=self.feed();selected=update.selection(self.installation,source);url='https://approved.example.invalid/feed';before=self.installation.read_bytes()
+        with patch.object(update,'selection',return_value=selected):
+            first=update.update(self.installation,url,adopt_feed=True)
+        self.assertTrue(first['feedAdopted']);new=Path(first['installation'])
+        self.assertEqual(json.loads(new.read_text())['cueUpdate']['feedUrl'],url)
+        update.rollback(new,Path(first['receipt']));self.assertEqual(self.installation.read_bytes(),before)
+        with patch.object(update,'selection',return_value=selected):
+            second=update.update(self.installation,url,adopt_feed=True)
+        self.assertNotEqual(first['receipt'],second['receipt'])
+        self.assertEqual(json.loads(Path(second['installation']).read_text())['cueUpdate']['feedUrl'],url)
+
+    def test_failed_adoption_leaves_prior_feed_unchanged(self):
+        self.configure_feed();before=self.installation.read_bytes();source=self.feed();selected=update.selection(self.installation,source)
+        archive=Path(selected[1]['archive']['location']);archive.write_bytes(b'corrupt')
+        with patch.object(update,'selection',return_value=selected):
+            with self.assertRaisesRegex(ValueError,'integrity'):update.update(self.installation,'https://new.example.invalid/feed',adopt_feed=True)
+        self.assertEqual(self.installation.read_bytes(),before);self.assertEqual(self.target.resolve(),self.current/'bin/codex')
+
+    def test_cli_adopt_feed_only_allowed_for_update(self):
+        with patch.object(update,'selection') as select,patch('sys.stderr',new=io.StringIO()):
+            code=update.main(['check','--installation',str(self.installation),'--source','https://example.invalid/feed','--adopt-feed'])
+        self.assertEqual(code,1);select.assert_not_called()
+
+    def test_cli_passes_explicit_adopt_flag(self):
+        with patch.object(update,'update',return_value={'state':'current','feedAdopted':False}) as apply,patch('sys.stdout',new=io.StringIO()):
+            code=update.main(['update','--installation',str(self.installation),'--source','https://example.invalid/feed','--adopt-feed'])
+        self.assertEqual(code,0);apply.assert_called_once_with(self.installation,'https://example.invalid/feed',adopt_feed=True)
+
     def test_patch_only_update_replaces_complete_package_and_rolls_back(self):
         source=self.feed();self.assertEqual(update.selection(self.installation,source)[0]['state'],'update_available')
         result=update.update(self.installation,source);self.assertEqual(result['state'],'installed');new=Path(result['installation']).parent

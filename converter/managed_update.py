@@ -202,9 +202,12 @@ def _extract(archive, stage):
             destination.chmod(0o755 if mode & 0o111 else 0o644)
 
 
-def update(installation, source=None):
+def update(installation, source=None, *, adopt_feed=False):
+    adopted_url = validate_feed_url(str(source)) if adopt_feed else None
     result, release, origin = selection(installation, source)
     if result["state"] != "update_available":
+        if adopt_feed:
+            result['feedAdopted'] = False
         return result
     root, meta, cue = package_info(installation)
     runtime = _runtime(root, cue)
@@ -212,7 +215,11 @@ def update(installation, source=None):
     if not target.is_absolute() or target.name != "codex":
         raise ValueError("Invalid managed installation target")
     with installation_lock(target):
-        return _apply_update(result, release, origin, root, meta, cue, runtime, target)
+        result = _apply_update(result, release, origin, root, meta, cue, runtime, target,
+                               adopted_url=adopted_url)
+    if adopt_feed:
+        result['feedAdopted'] = True
+    return result
 
 
 @contextlib.contextmanager
@@ -240,7 +247,7 @@ def rollback(installation, receipt):
     return _runtime(root, cue).rollback_install(Path(receipt))
 
 
-def _apply_update(result, release, origin, root, meta, cue, runtime, target):
+def _apply_update(result, release, origin, root, meta, cue, runtime, target, *, adopted_url=None):
     names = ["codex", "codex-code-mode-host"]
     if meta["target"].endswith("linux-musl") or meta["target"].endswith("linux-gnu"):
         names.append("codex-linux-sandbox")
@@ -266,7 +273,9 @@ def _apply_update(result, release, origin, root, meta, cue, runtime, target):
                 # Target relocation belongs to this installation, not a distributor's path.
                 new_cue["installTarget"] = cue["installTarget"]
             # An explicit one-off source cannot change the installation's feed policy.
-            if 'feedUrl' in cue:
+            if adopted_url is not None:
+                new_cue['feedUrl'] = adopted_url
+            elif 'feedUrl' in cue:
                 new_cue['feedUrl'] = cue['feedUrl']
             else:
                 new_cue.pop('feedUrl', None)
@@ -363,12 +372,15 @@ def main(argv=None):
     parser.add_argument("--installation",type=Path,required=True)
     parser.add_argument("--source",help="Explicit compatible-release descriptor file or HTTPS URL")
     parser.add_argument("--receipt",type=Path)
+    parser.add_argument("--adopt-feed",action="store_true",help="Explicitly adopt the HTTPS --source as the default feed only after a successful package update")
     args=parser.parse_args(argv)
     try:
+        if args.adopt_feed and args.command != 'update':
+            raise ValueError('--adopt-feed is only valid for update with an explicit HTTPS --source')
         if args.command=="check":
             result=selection(args.installation,args.source)[0]
         elif args.command=="update":
-            result=update(args.installation,args.source)
+            result=update(args.installation,args.source,adopt_feed=args.adopt_feed)
         else:
             root,meta,cue=package_info(args.installation)
             if not args.receipt: raise ValueError("Rollback requires --receipt")

@@ -187,8 +187,11 @@ An upstream Codex release becomes eligible only after native compatibility check
 The included [release pipeline](RELEASE-PIPELINE.md) discovers upstream releases,
 builds complete packages on each supported host, verifies their behavior, and
 publishes the compatible feed. Hosting and a successful first workflow run are
-required before this becomes an active update service. Configure its address with
-`runtime plan --update-feed HTTPS_URL`; updates retain that feed setting.
+required before this becomes an active update service. New `setup` installations
+default to `https://github.com/achammah/claude-codex-converter/releases/latest/download/compatible-releases.json`.
+Use `setup --update-feed HTTPS_URL` to choose another compatible feed. Planning
+records the URL without fetching it or changing host trust. Direct `runtime plan`
+also accepts `--update-feed HTTPS_URL`; updates retain that feed setting.
 
 An explicit compatible release descriptor can also be supplied for one invocation:
 
@@ -200,6 +203,21 @@ python3 claude-codex-converter.pyz update update \
   --installation /path/to/runtime/codex-package.json \
   --source /path/to/compatible-releases.json
 ```
+
+To connect an older managed installation without a default feed, use an updated
+converter and explicitly adopt the published feed during its next package update:
+
+```sh
+python3 claude-codex-converter.pyz update update \
+  --installation /path/to/runtime/codex-package.json \
+  --source https://github.com/achammah/claude-codex-converter/releases/latest/download/compatible-releases.json \
+  --adopt-feed
+```
+
+Adoption requires an explicit HTTPS source and a successful package update. A
+failed check or a current release leaves the existing feed unchanged. Rollback
+restores the previous package and feed. Without `--adopt-feed`, a source override
+does not change the installation's default feed.
 
 The descriptor identifies a validated release, platform, ordered release sequence,
 required patch markers, and SHA-256 of its package ZIP. The updater validates the
