@@ -20,6 +20,7 @@ import zipfile
 
 MANAGER = "claude-codex-converter"
 REQUIRED_MARKERS = ("native-status-provider-v1", "CUE_QUESTION_UI_V1", "CUE_MANAGED_UPDATE_V1")
+OPTIONAL_MARKERS = ("CUE_FD_CAPACITY_V1", "CUE_HOOK_ASK_V1")
 MAX_DESCRIPTOR = 1024 * 1024
 MAX_ARCHIVE = 1024 * 1024 * 1024
 
@@ -55,6 +56,16 @@ def confined(root, relative):
     return path
 
 
+def required_markers(cue):
+    values = cue.get("requiredMarkers", [])
+    if (not isinstance(values, list) or len(values) > 64 or
+            any(not isinstance(v, str) or not v or len(v) > 128 or
+                any(c not in "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_-" for c in v)
+                for v in values)):
+        raise ValueError("Invalid required native capabilities")
+    return sorted(set(REQUIRED_MARKERS).union(values))
+
+
 def package_info(installation):
     installation = Path(installation).absolute()
     root = installation.parent
@@ -69,6 +80,12 @@ def package_info(installation):
     sequence = cue.get("sequence")
     if type(sequence) is not int or sequence < 1 or not isinstance(cue.get("releaseId"), str):
         raise ValueError("Invalid installed release identity")
+    markers = required_markers(cue)
+    binary = root / "bin/codex"
+    if binary.is_file() and not binary.is_symlink():
+        data = binary.read_bytes()
+        markers = sorted(set(markers).union(v for v in OPTIONAL_MARKERS if v.encode() in data))
+    cue["requiredMarkers"] = markers
     if 'feedUrl' in cue:
         validate_feed_url(cue['feedUrl'])
     return root, meta, cue
@@ -115,7 +132,7 @@ def selection(installation, source=None):
         if type(row.get("sequence")) is not int or row["sequence"] < 1:
             raise ValueError("Invalid release sequence")
         compatibility = row.get("compatibility", {})
-        if compatibility.get("validated") is not True or not set(REQUIRED_MARKERS).issubset(compatibility.get("markers", [])):
+        if compatibility.get("validated") is not True or not set(required_markers(cue)).issubset(compatibility.get("markers", [])):
             continue
         if not isinstance(row.get("version"), str) or not isinstance(row.get("releaseId"), str):
             raise ValueError("Release identity is missing")
@@ -269,6 +286,13 @@ def _apply_update(result, release, origin, root, meta, cue, runtime, target, *, 
             new_root, new_meta, new_cue = package_info(stage/"codex-package.json")
             if new_meta["version"] != release["version"] or new_meta["target"] != meta["target"] or new_cue["releaseId"] != release["releaseId"] or new_cue["sequence"] != release["sequence"]:
                 raise ValueError("Candidate package differs from release descriptor")
+            required = set(required_markers(cue))
+            declared = set(required_markers(new_cue))
+            advertised = set(release["compatibility"]["markers"])
+            if not required.issubset(declared) or not declared.issubset(advertised):
+                raise ValueError("Candidate drops required native capabilities")
+            if declared - set(REQUIRED_MARKERS) and new_cue.get("capabilityPolicyVersion") != 1:
+                raise ValueError("Candidate updater cannot preserve native capabilities")
             if new_cue["installTarget"] != cue["installTarget"]:
                 # Target relocation belongs to this installation, not a distributor's path.
                 new_cue["installTarget"] = cue["installTarget"]
@@ -289,7 +313,7 @@ def _apply_update(result, release, origin, root, meta, cue, runtime, target, *, 
                 raise ValueError("Candidate ripgrep is missing")
             cli = stage/"bin/codex"
             data = cli.read_bytes()
-            if any(marker.encode() not in data for marker in REQUIRED_MARKERS):
+            if any(marker.encode() not in data for marker in declared):
                 raise ValueError("Candidate is missing a required native patch")
             if release["version"] not in runtime._run([str(cli), "--version"]).stdout.split():
                 raise ValueError("Candidate executable version differs")
@@ -345,10 +369,15 @@ def _apply_update(result, release, origin, root, meta, cue, runtime, target, *, 
                 shutil.rmtree(stage)
 
 
-def stage_manager(package_stage, metadata, *, target, runtime_source, release_id, sequence=1, feed_url=None):
+def stage_manager(package_stage, metadata, *, target, runtime_source, release_id, sequence=1, feed_url=None, required_capabilities=()):
     if feed_url is not None:
         validate_feed_url(feed_url)
     """Bundle a durable updater and an offline compatible-release descriptor."""
+    markers = required_markers({"requiredMarkers": list(required_capabilities) + required_markers(metadata.get("cueUpdate", {}))})
+    binary = package_stage / "bin/codex"
+    if binary.is_file() and not binary.is_symlink():
+        data = binary.read_bytes()
+        markers = sorted(set(markers).union(v for v in OPTIONAL_MARKERS if v.encode() in data))
     resources = package_stage/"codex-resources"
     resources.mkdir(exist_ok=True)
     program = resources/"cue-update"
@@ -357,11 +386,12 @@ def stage_manager(package_stage, metadata, *, target, runtime_source, release_id
     program.chmod(0o755)
     runtime_file = resources/"native_runtime.py"
     runtime_file.write_bytes(Path(runtime_source).read_bytes())
-    descriptor = {"schemaVersion":1,"manager":MANAGER,"releases":[{"releaseId":release_id,"sequence":sequence,"version":metadata["version"],"target":metadata["target"],"compatibility":{"validated":True,"markers":list(REQUIRED_MARKERS)}}]}
+    descriptor = {"schemaVersion":1,"manager":MANAGER,"releases":[{"releaseId":release_id,"sequence":sequence,"version":metadata["version"],"target":metadata["target"],"compatibility":{"validated":True,"markers":markers,"capabilityPolicyVersion":1}}]}
     descriptor_file=resources/"compatible-releases.json"
     descriptor_file.write_text(json.dumps(descriptor,indent=2)+"\n")
     metadata["manager"]=MANAGER
     metadata["cueUpdate"]={"schemaVersion":1,"program":"codex-resources/cue-update","sha256":digest(source),"runtimeFile":"codex-resources/native_runtime.py","runtimeSha256":digest(runtime_file.read_bytes()),"descriptorFile":"codex-resources/compatible-releases.json","descriptorSha256":digest(descriptor_file.read_bytes()),"releaseId":release_id,"sequence":sequence,"installTarget":str(target)}
+    metadata["cueUpdate"].update(requiredMarkers=markers, capabilityPolicyVersion=1)
     if feed_url is not None:
         metadata['cueUpdate']['feedUrl'] = feed_url
 

@@ -146,11 +146,14 @@ def package(root, candidate, patch_proof, evidence, output, base_url):
         raise ValueError('Patch proof does not match candidate')
     if tuple(p.get('marker') for p in patch_proof.get('patches', [])) != managed_update.REQUIRED_MARKERS:
         raise ValueError('Patch proof lacks required patches')
+    markers = managed_update.required_markers(cue)
+    if set(markers) - set(managed_update.REQUIRED_MARKERS) and cue.get('capabilityPolicyVersion') != 1:
+        raise ValueError('Candidate updater cannot preserve native capabilities')
     files = inventory(root)
     required = {'bin/codex', 'bin/codex-code-mode-host', 'codex-path/rg'}
     if 'linux' in target: required.add('bin/codex-linux-sandbox')
     if not required.issubset(files): raise ValueError('Incomplete package companions')
-    if any(m.encode() not in (root/'bin/codex').read_bytes() for m in managed_update.REQUIRED_MARKERS):
+    if any(m.encode() not in (root/'bin/codex').read_bytes() for m in markers):
         raise ValueError('Missing native marker')
     binding = {'candidateSha256': sha(canonical(candidate)), 'patchProofSha256': sha(canonical(patch_proof)),
                'inventorySha256': sha(canonical(files)), 'target': target,
@@ -174,7 +177,7 @@ def package(root, candidate, patch_proof, evidence, output, base_url):
         if archive.exists() and archive.read_bytes() != staged.read_bytes(): raise ValueError('Immutable archive already exists with different bytes')
         os.replace(staged, archive)
     return {'releaseId': cue['releaseId'], 'sequence': cue['sequence'], 'version': meta['version'], 'target': target,
-            'compatibility': {'validated': True, 'markers': list(managed_update.REQUIRED_MARKERS)},
+            'compatibility': {'validated': True, 'markers': markers, 'capabilityPolicyVersion': cue.get('capabilityPolicyVersion', 1)},
             'archive': {'location': base_url.rstrip('/')+'/'+archive_name, 'sha256': sha(archive.read_bytes())},
             'evidenceSha256': sha(canonical(evidence)), 'binding': binding}
 
@@ -195,7 +198,12 @@ def _advance_locked(feed_path, releases, published):
         proof = published.get(row['archive']['location'], {})
         if proof != {'sha256': row['archive']['sha256'], 'evidenceSha256': row['evidenceSha256'], 'verified': True}:
             raise ValueError('Publication is not verified')
-        if row['target'] not in TARGETS or row['compatibility'] != {'validated':True,'markers':list(managed_update.REQUIRED_MARKERS)}:
+        compatibility = row.get('compatibility', {})
+        markers = compatibility.get('markers', [])
+        validated_markers = managed_update.required_markers({'requiredMarkers': markers})
+        if (row['target'] not in TARGETS or compatibility.get('validated') is not True or
+                set(markers) != set(validated_markers) or
+                (set(markers) - set(managed_update.REQUIRED_MARKERS) and compatibility.get('capabilityPolicyVersion') != 1)):
             raise ValueError('Invalid compatible release')
         prior = [r for r in rows if r['target'] == row['target']]
         if row in prior: continue

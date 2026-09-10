@@ -464,3 +464,18 @@ become documented mappings and regression cases.
 Documentation: [Codex import](https://learn.chatgpt.com/docs/import),
 [hooks](https://learn.chatgpt.com/docs/hooks),
 [configuration](https://developers.openai.com/codex/config-reference/).
+
+## Preserve capabilities during updates
+
+Managed packages record their required native capabilities. Update selection checks
+that a candidate advertises every installed requirement. Before replacement, the
+updater verifies the candidate metadata, capability policy, and executable markers.
+A higher version or release sequence cannot remove a required feature.
+
+The updater recognizes installed file-descriptor capacity and HookAsk markers even
+when older package metadata omitted them. A feed containing only incompatible
+releases reports `no_compatible_update`; it leaves the installation unchanged.
+An explicit rollback can restore the prior package recorded in its receipt.
+
+These checks preserve declared and recognized capabilities; markers alone do not
+prove behavior. Native runtime tests remain a separate release requirement.

@@ -24,6 +24,25 @@ class ReleasePipelineTests(unittest.TestCase):
     def pack(self,output='out'):
         return p.package(self.pkg,self.candidate,self.proof,self.evidence,self.root/output,'https://releases.example.invalid/runtime')
 
+    def test_full_capabilities_are_advertised_and_feed_accepts_them(self):
+        markers=['CUE_FD_CAPACITY_V1','CUE_HOOK_ASK_V1']
+        binary=self.pkg/'bin/codex';binary.write_text(binary.read_text()+' '+' '.join(markers))
+        managed_update.stage_manager(self.pkg,self.meta,target=self.root/'visible/codex',runtime_source=Path(native_runtime.__file__),release_id='test-release',sequence=2)
+        p.write(self.pkg/'codex-package.json',self.meta)
+        self.evidence['binding']['inventorySha256']=p.sha(p.canonical(p.inventory(self.pkg)))
+        row=self.pack()
+        self.assertEqual(set(row['compatibility']['markers']),set(managed_update.REQUIRED_MARKERS).union(markers))
+        self.assertEqual(row['compatibility']['capabilityPolicyVersion'],1)
+        hosted={row['archive']['location']:{'sha256':row['archive']['sha256'],'evidenceSha256':row['evidenceSha256'],'verified':True}}
+        self.assertEqual(p.advance(self.root/'feed.json',[row],hosted)['releases'][0],row)
+
+    def test_declared_capability_without_binary_marker_rejects_package(self):
+        self.meta['cueUpdate']['requiredMarkers'].append('CUE_HOOK_ASK_V1')
+        p.write(self.pkg/'codex-package.json',self.meta)
+        self.evidence['binding']['inventorySha256']=p.sha(p.canonical(p.inventory(self.pkg)))
+        with self.assertRaisesRegex(ValueError,'Missing native marker'):self.pack()
+        self.assertFalse((self.root/'out').exists())
+
     def test_candidate_never_claims_compatibility(self):
         self.assertEqual(self.candidate['state'],'candidate');self.assertNotIn('compatibility',self.candidate)
         with self.assertRaises(ValueError):p.discover({'tag_name':'main'},'a'*40)

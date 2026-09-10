@@ -100,3 +100,15 @@ The converter checks recognized literal operands and redirects for source denies
 Dynamic expansion, arbitrary subprocesses, aliases, and recursive traversal remain
 incomplete coverage. Native filesystem restrictions remain necessary; these tests
 do not authorize removing them or claim that native approval dialogs are verified.
+
+## Update capability preservation
+
+Fixed baseline marker checks can accept a newer package that removes an installed
+feature. Managed package metadata and feed records now carry the full required
+marker set and capability policy version. Selection, extraction, and publication
+validate this contract. Restaging preserves earlier requirements.
+
+Regression tests reject a higher-sequence release without a required feature,
+a missing executable marker, and a candidate without the required updater policy.
+They also exercise successful replacement and explicit rollback. Existing
+file-descriptor capacity markers are detected without modifying installed metadata.
