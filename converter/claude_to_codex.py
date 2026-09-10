@@ -7,6 +7,7 @@ No universal program can infer the meaning of arbitrary executable hooks; strict
 mode returns nonzero for unsupported behavior rather than claiming silent parity.
 """
 import argparse
+import fnmatch
 import hashlib
 import json
 import os
@@ -576,6 +577,63 @@ class Converter:
             dump(self.output / '.cue/metadata/skills' / (name + '.json'), metadata)
         dump(self.output / '.cue/command-skill-map.json', command_map)
 
+    def mcp_permissions(self, servers):
+        """Compile exact source MCP identities without granting pattern expansions."""
+        decisions, unresolved = {}, []
+        rank = {'allow': 0, 'ask': 1, 'deny': 2}
+        for row in self.permission_rules:
+            rule = row['original_rule']
+            if not rule.startswith('mcp__'):
+                if row['action'] != 'allow':
+                    unresolved.append(row)
+                continue
+            candidates = []
+            if re.fullmatch(r'mcp__[A-Za-z0-9_.-]+', rule):
+                for name, server in servers.items():
+                    prefix = 'mcp__' + name + '__'
+                    if (server.get('type', 'stdio') in ('stdio', 'http')
+                            and rule.startswith(prefix) and rule[len(prefix):]):
+                        candidates.append((name, rule[len(prefix):]))
+            if len(candidates) != 1:
+                unresolved.append(row)
+                self.finding('mcp-permission', rule,
+                             'Only an exact tool rule with one configured, supported MCP server identity has a native mapping. '
+                             'Unknown servers, ambiguous identities and wildcard rules remain explicit review gaps.',
+                             'manual', action=row['action'])
+                continue
+            key = candidates[0]
+            previous = decisions.get(key)
+            if previous is None or rank[row['action']] > rank[previous]:
+                decisions[key] = row['action']
+        result = {}
+        for (name, tool), action in sorted(decisions.items()):
+            rule = 'mcp__' + name + '__' + tool
+            # A broader unresolved restriction must not be weakened by approve.
+            overlaps = [row for row in unresolved if rank[row['action']] > rank[action]
+                        and (fnmatch.fnmatchcase(rule, row['original_rule'])
+                             or rule.startswith(row['original_rule'] + '__'))]
+            if overlaps:
+                self.finding('mcp-permission', rule,
+                             'Native tool approval is withheld because an unresolved, more restrictive source rule overlaps it.',
+                             'manual', action=action,
+                             overlapping_rules=sorted({row['original_rule'] for row in overlaps}))
+                continue
+            policy = result.setdefault(name, {'tools': {}, 'disabled_tools': []})
+            if action == 'deny':
+                policy['disabled_tools'].append(tool)
+            else:
+                policy['tools'][tool] = {'approval_mode': 'approve' if action == 'allow' else 'prompt'}
+            self.finding('mcp-permission', rule,
+                         'Exact MCP permission mapped with deny over ask over allow. Unmentioned tools retain native defaults; '
+                         'managed host requirements still constrain approval.', action=action,
+                         native_control='disabled_tools' if action == 'deny' else 'tools.' + tool + '.approval_mode')
+            if action == 'ask':
+                self.finding('mcp-permission-runtime', rule,
+                             'Native prompt configuration is emitted, but the adapter retains its source ask guard. '
+                             'Current native PreToolUse events do not attest the loaded per-tool approval route; '
+                             'disk settings cannot safely certify that a user dialog will occur.', 'manual')
+        return result
+
     def config(self):
         settings = self.settings
         permissions = settings.get('permissions', {})
@@ -613,7 +671,7 @@ class Converter:
                                  'The native filesystem fallback anchors this relative restriction at the target project. '
                                  'Runtime tool checks also evaluate the actual call working directory; shell filesystem access after a directory change needs host verification.',
                                  'needs-runtime-test', action=row['action'])
-            elif not rule.startswith('Bash('):
+            elif not rule.startswith(('Bash(', 'mcp__')):
                 self.finding('permission', rule, 'Tool-specific permission has no verified native mapping; retain in runtime metadata and require review.', 'manual')
         for path in sorted(read_paths):
             filesystem[path] = 'deny'
@@ -662,9 +720,12 @@ class Converter:
         if env.get('CLAUDE_CODE_MAX_SUBAGENTS_PER_SESSION'):
             self.finding('agent-limit', 'effective-settings/env', 'Total per-session limit is recorded but Codex native config only exposes a concurrency ceiling.', 'manual')
         mcp = self.project / '.mcp.json'
+        servers = {}
         if mcp.exists():
             servers = json.loads(self.archive_root_file(mcp)).get('mcpServers', {})
             dump(self.output / '.cue/mcp-source.json', servers)
+        mcp_permissions = self.mcp_permissions(servers)
+        if servers:
             for name, server in servers.items():
                 if name == 'cue_questions':
                     raise ValueError('Source MCP server uses reserved cue_questions name; rename it before conversion.')
@@ -684,6 +745,11 @@ class Converter:
                         if key == 'args' and isinstance(value, list):
                             value = [self.translate(x) if isinstance(x, str) else x for x in value]
                         config.append(target_key + ' = ' + toml_value(value))
+                policy = mcp_permissions.get(name, {})
+                if policy.get('disabled_tools'):
+                    config.append('disabled_tools = ' + toml_value(policy['disabled_tools']))
+                if policy.get('tools'):
+                    config.append('tools = ' + toml_value(policy['tools']))
                 self.finding('mcp', name, 'Server definition transferred; authentication must be performed in the target host.', 'needs-runtime-test')
         if 'statusLine' in settings:
             manifest = build_manifest(settings['statusLine'], translate=self.translate, project=self.project, output=self.output,

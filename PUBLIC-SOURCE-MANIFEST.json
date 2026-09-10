@@ -22,7 +22,7 @@
     },
     "README.md": {
       "mode": 420,
-      "sha256": "1f96b70ee81b7050991772ad45f6472d6c6135020c2c659db4bd58bd6d923f1e"
+      "sha256": "c8c60f0085ad03cc79e64a34e0e83e1a3b4a8e1837f9444d4208742a6f73d5ee"
     },
     "RELEASE-PIPELINE.md": {
       "mode": 420,
@@ -46,7 +46,7 @@
     },
     "converter/claude_to_codex.py": {
       "mode": 420,
-      "sha256": "5019cd2499c6785efed79c654e26d45e6b5d072bc631ca7fe6d61249b2b41a0a"
+      "sha256": "a39fa7a00878949a2f94dd4053dc90bd96c894d2d981a6ad4d75098a153791b3"
     },
     "converter/cli.py": {
       "mode": 420,
@@ -198,7 +198,7 @@
     },
     "scripts/export_public.py": {
       "mode": 420,
-      "sha256": "736beaadf64c39e433bcde59efeaaea61ecd69ed7ff71d6899ec42b55a3d8189"
+      "sha256": "d7db83bcd9dd87cf90f1ace97680e3247068d65f4eef07a5ce2acb323b1be671"
     },
     "scripts/release_runner.py": {
       "mode": 420,
@@ -324,6 +324,14 @@
       "mode": 420,
       "sha256": "672c9f8a42ac2ce13f423d7e7b4465b600437b943c1ade5fa005576bb2301271"
     },
+    "tests/test_mcp_permissions.py": {
+      "mode": 420,
+      "sha256": "3895d04ed52aa5fc496259d0f936a6fb6814287212d3eda6609b5a48d1bd4a85"
+    },
+    "tests/test_native_lockfile_patch.py": {
+      "mode": 420,
+      "sha256": "d323e9f88eab48687b17c039a7115bf3c3439b4dfb888127f0ef686bcb425d79"
+    },
     "tests/test_native_runtime.py": {
       "mode": 420,
       "sha256": "539da94f1c05f7614e226c00eb6f33c41d5f5984e43758425098c5350c2b05dc"
@@ -367,6 +375,10 @@
     "tests/test_setup.py": {
       "mode": 420,
       "sha256": "0b559021e6cb10d13d2c074b2d4dc350127b95ce25cef91fb4a0d34ef2e9ff56"
+    },
+    "tests/test_shell_permission_exactness.py": {
+      "mode": 420,
+      "sha256": "786b6091a48643a5e699f0ff97f8c3006fa8fbbe38ef6f394ca65286abf01892"
     },
     "tests/test_source_activation.py": {
       "mode": 420,

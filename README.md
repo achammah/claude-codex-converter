@@ -376,6 +376,32 @@ as a manual gap. A managed denial can be non-escalatable, so approving a repeate
 command does not necessarily grant access. The converter does not automatically
 broaden permissions to remove those differences.
 
+### Codex-native permission controls
+
+Permission conversion uses separate controls; a single bypass flag cannot express
+the source policy:
+
+| Source intent | Codex control | Boundary |
+|---|---|---|
+| Allow, ask about, or forbid a command prefix | `prefix_rule` with `allow`, `prompt`, or `forbidden` | A prefix also matches trailing arguments. Exact-command grants must not be widened into prefixes. |
+| Read, write, or deny filesystem access | Named `permissions` profile | Filesystem access applies across tools. A source tool-specific rule can have a different scope. |
+| Approve or prompt for an exact MCP tool | `mcp_servers.<server>.tools.<tool>.approval_mode` | Generated settings require runtime verification; a loaded override can change approval behavior. |
+| Deny an exact MCP tool | `disabled_tools` | Only the named tool is removed. An allow rule does not hide unmentioned tools. |
+| Restrict network destinations | Profile domain rules plus the native network proxy | A domain table alone does not enable enforcement. |
+
+Exact MCP conversion requires one configured server identity. Conflicting exact
+rules use deny before ask before allow. Unresolved overlapping restrictions
+withhold less restrictive native grants and produce review findings.
+The adapter currently blocks source asks without a verified native approval route;
+an accepted configuration alone does not prove that a prompt appears.
+
+`approval_policy = "never"` controls prompting; it does not itself grant filesystem
+access. Launch flags, inherited configuration, and managed host requirements can
+change the effective policy. The diagnostic distinguishes saved settings from
+observed session modes and does not label them equivalent.
+See the official [command-rule documentation](https://learn.chatgpt.com/docs/agent-configuration/rules)
+and [configuration reference](https://learn.chatgpt.com/docs/config-file/config-reference).
+
 **This release does not promise universal behavioral equivalence.** Arbitrary
 executable hooks, external services, exact per-tool agent ACLs, unsupported lifecycle
 events, command interpolation, native UI behavior, plugin LSP servers, and active
