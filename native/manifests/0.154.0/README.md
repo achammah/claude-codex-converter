@@ -11,3 +11,9 @@ The status patch also adds its codex-utils-pty dependency to the codex-tui Cargo
 The four companion package records come from the official npm registry at matching version 0.154.0. Their archives and runtime compatibility still require release-runner verification. No candidate native build or runtime test is claimed by this manifest. The runner must supply release identity and sequence.
 
 The release runner records patch proof and native test evidence for each build. The focused test harness is `tests/native_smoke/native_tests.py` at the repository root.
+
+The status patch includes early CLI descriptor-capacity initialization. It raises
+only the soft limit within the existing hard limit. The release runner requires
+`tests/native_smoke/resource_capacity.py` to verify actual CLI startup and status
+rendering from a low inherited limit. The patch also preserves the status-provider
+configuration in the upstream local-settings initializer.

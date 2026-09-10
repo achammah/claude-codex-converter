@@ -2896,3 +2896,46 @@ index 0000000000000000000000000000000000000000..8f79a763f4a7501a14b0bd14ef0a8add
 +        "provider child {child_pid} survived task cancellation"
 +    );
 +}
+--- a/codex-rs/cli/src/main.rs
++++ b/codex-rs/cli/src/main.rs
+@@ -1,3 +1,4 @@
++mod resource_limits;
+ use clap::Args;
+ use clap::CommandFactory;
+ use clap::Parser;
+@@ -1053,6 +1054,9 @@
+ }
+ 
+ fn main() -> anyhow::Result<()> {
++    if let Err(error) = resource_limits::raise_open_file_limit() {
++        eprintln!("Could not raise the process open-file limit: {error}");
++    }
+     let remote_control_disabled = codex_app_server::take_remote_control_disabled_env();
+     arg0_dispatch_or_else(move |arg0_paths: Arg0DispatchPaths| async move {
+         cli_main(arg0_paths, remote_control_disabled).await?;
+--- /dev/null
++++ b/codex-rs/cli/src/resource_limits.rs
+@@ -0,0 +1,23 @@
++//! Give retained threads room for rollout files, locks, sockets, and child pipes.
++const DESIRED_OPEN_FILES: u64 = 4096;
++
++pub(crate) fn raise_open_file_limit() -> std::io::Result<()> {
++    std::hint::black_box("CUE_FD_CAPACITY_V1");
++    #[cfg(unix)]
++    {
++        let mut limit = libc::rlimit { rlim_cur: 0, rlim_max: 0 };
++        // SAFETY: getrlimit writes to this valid stack-owned structure.
++        if unsafe { libc::getrlimit(libc::RLIMIT_NOFILE, &mut limit) } != 0 {
++            return Err(std::io::Error::last_os_error());
++        }
++        let desired = (DESIRED_OPEN_FILES as libc::rlim_t).min(limit.rlim_max);
++        if limit.rlim_cur < desired {
++            limit.rlim_cur = desired;
++            // SAFETY: only the current process soft limit changes; hard stays unchanged.
++            if unsafe { libc::setrlimit(libc::RLIMIT_NOFILE, &limit) } != 0 {
++                return Err(std::io::Error::last_os_error());
++            }
++        }
++    }
++    Ok(())
++}

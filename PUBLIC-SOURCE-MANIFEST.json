@@ -26,7 +26,7 @@
     },
     "RELEASE-PIPELINE.md": {
       "mode": 420,
-      "sha256": "e7c220c7e46100a2b2f6845c48129caeb6e612a37a2057fca293e37e59fb19a0"
+      "sha256": "617f94a1decf7ab7b789a5d2606370ee9832f20a9396410f15ecf080d5444950"
     },
     "build.py": {
       "mode": 420,
@@ -150,11 +150,11 @@
     },
     "native/manifest.json": {
       "mode": 420,
-      "sha256": "dcadca0b7e1da3e405c98e6a8f1cec42451ba8707625c37b54c514c0e68090d8"
+      "sha256": "fa8d54e3c9bae388a355d937f439c8c08cd1d34a4ccf4bb06b08bc848d72c29f"
     },
     "native/manifests/0.154.0/README.md": {
       "mode": 420,
-      "sha256": "f692776a64e476c409eb8666148809e356b1a298baa49a9a9f54d8d1de37c105"
+      "sha256": "635cf0c50c89b8d27ecf4ccfe55fc4d925dc72b0656b5c3c40dacaa78a9240a4"
     },
     "native/manifests/0.154.0/managed-updater.patch": {
       "mode": 420,
@@ -162,7 +162,7 @@
     },
     "native/manifests/0.154.0/manifest.json": {
       "mode": 420,
-      "sha256": "804a3bdb146b890ac0e69f2506a458699bff405b7811c64877ccabc263f752f3"
+      "sha256": "9c64c03220a8ceb57640471072d0bb875d117aabb2778a44126154ec25308879"
     },
     "native/manifests/0.154.0/normalize_workspace_lock.py": {
       "mode": 420,
@@ -174,7 +174,7 @@
     },
     "native/manifests/0.154.0/status-provider.patch": {
       "mode": 420,
-      "sha256": "efe77789aeca0a4525b85c57803244ab01e2206840df1580cc51aa5436a261a2"
+      "sha256": "cb6ca13baf158dbfdb2da24fe51a0021a431274c1b8713a196a98cdb28e0511f"
     },
     "native/question-form.patch": {
       "mode": 420,
@@ -182,7 +182,7 @@
     },
     "native/status-provider.patch": {
       "mode": 420,
-      "sha256": "efc32de939833e59aa1c1c7fc3174dbe1d20d0374d8e4b7dd11e18cf1356316e"
+      "sha256": "43179f8868c92a5405c0c424d1117443c2654ffe0e6ee2f58d013320c9fa73fd"
     },
     "pyproject.toml": {
       "mode": 420,
@@ -198,11 +198,11 @@
     },
     "scripts/export_public.py": {
       "mode": 420,
-      "sha256": "1ed0516254ff303b0b6d860efa6eeee4cac5122adeb2e1e42b78440aa1b09a0e"
+      "sha256": "736beaadf64c39e433bcde59efeaaea61ecd69ed7ff71d6899ec42b55a3d8189"
     },
     "scripts/release_runner.py": {
       "mode": 420,
-      "sha256": "5ae8ed2dd62f2d6631a86620bfc3bd570a23cbbf109f86cad62503609880bd11"
+      "sha256": "749ac48591cde4e3bc8928f1ba04568ebaf4486f817323c233ae3f68c21282e6"
     },
     "tests/bidirectional_repeatability.py": {
       "mode": 420,
@@ -222,7 +222,7 @@
     },
     "tests/native_smoke/README.md": {
       "mode": 420,
-      "sha256": "675d401031044be92199254a5922ac20a4587fff8aa0d30add44416bcb550b18"
+      "sha256": "cc31b452420bb3e36bdf2660e4504ff3c50e87bae0cb3e6aae119ebfc37b97e3"
     },
     "tests/native_smoke/harness-Cargo.lock": {
       "mode": 420,
@@ -247,6 +247,10 @@
     "tests/native_smoke/requirements.txt": {
       "mode": 420,
       "sha256": "70cf00e214cbf918de1b74949c9d37c5077d226ea973acf64be583ada9a64ba7"
+    },
+    "tests/native_smoke/resource_capacity.py": {
+      "mode": 420,
+      "sha256": "76367c54c9f62d3100cffd4fb4da1ffd1a8f8fbbdc151d40422829785a9dda73"
     },
     "tests/native_smoke/update_package.py": {
       "mode": 420,

@@ -47,6 +47,13 @@ Each required check carries `passed: true` and the SHA-256 of its captured log:
 collect it from its own successful jobs; accepting arbitrary uploaded reports
 would not establish compatibility.
 
+The `native_tests` check also drives CLI startup with a 256-file soft limit.
+Its actual status-provider child must open 700 files simultaneously, render the
+status result, and retain the original hard limit. This rejects a package that
+loses the native descriptor-capacity fix. The bootstrap raises only the process
+soft limit toward 4096, capped by its existing hard limit; no shell wrapper or
+global operating-system setting is changed.
+
 Use `release_pipeline.canonical`, `sha`, and `inventory` to compute the binding.
 The package command accepts `--root`, `--candidate`, `--patch-proof`, `--evidence`,
 `--output`, `--base-url`, and `--record`. The last path receives the release record.

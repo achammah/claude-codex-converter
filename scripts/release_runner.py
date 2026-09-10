@@ -256,7 +256,10 @@ def run(args):
     checks = {'native_tests': {'passed': True, 'logSha256': native_digest}}
     focused = smoke('native_focused', [sys.executable, str(ROOT/'tests/native_smoke/native_tests.py'),
         '--source', str(source), '--cargo', 'cargo', '--target-dir', str(work/'focused-target')], work, env)
-    native_checks = {'full_library_tests': checks['native_tests'], 'focused_actual_modules': focused}
+    capacity = smoke('native_resource_capacity',
+        [sys.executable, str(ROOT/'tests/native_smoke/resource_capacity.py'), '--package', str(package)], work, env)
+    native_checks = {'full_library_tests': checks['native_tests'],
+                     'focused_actual_modules': focused, 'resource_capacity': capacity}
     pipeline.write(work/'native-tests-combined.json', native_checks)
     checks['native_tests'] = {'passed': True,
         'logSha256': pipeline.sha((work/'native-tests-combined.json').read_bytes()), 'subchecks': native_checks}

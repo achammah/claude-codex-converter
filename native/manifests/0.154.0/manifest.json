@@ -1,8 +1,8 @@
 {
   "schema_version": 1,
-  "release_sequence": 2,
+  "release_sequence": 4,
   "upstream_commit": "6b9826e3aa83b1a5947db50f4332cb9c65f1b340",
-  "patch_sha256": "efe77789aeca0a4525b85c57803244ab01e2206840df1580cc51aa5436a261a2",
+  "patch_sha256": "cb6ca13baf158dbfdb2da24fe51a0021a431274c1b8713a196a98cdb28e0511f",
   "patch_file": "status-provider.patch",
   "feature_marker": "native-status-provider-v1",
   "additional_patches": [
