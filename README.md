@@ -109,6 +109,7 @@ Check the generated setup without running its hooks or MCP servers:
 python3 claude-codex-converter.pyz doctor /path/to/project
 python3 claude-codex-converter.pyz doctor /path/to/project --native-mcp
 python3 claude-codex-converter.pyz doctor /path/to/project --claude-session /path/to/session.jsonl
+python3 claude-codex-converter.pyz doctor /path/to/project --codex-session /path/to/rollout.jsonl
 ```
 
 The offline check also reads global hook definitions from `CODEX_HOME` or
@@ -123,6 +124,12 @@ does not report message content. For large logs, it examines the newest 512 MiB
 and reports the inspected byte range; this is not a complete historical scan.
 A runtime mode can differ from saved settings. These observations do not establish
 Codex's effective runtime or managed policy, and the diagnostic changes no permissions.
+
+With `--codex-session`, it reads the selected conversation's latest matching
+`turn_context` approval and sandbox controls. It reports differences from project
+configuration without printing instructions, tool arguments, or writable paths.
+Both session options can be combined. Recorded turn controls do not prove that
+every command is allowed; managed restrictions and tool-specific decisions still apply.
 
 The optional native MCP check reads sanitized authentication metadata. It never
 starts OAuth, prints credentials, disables a server, or treats a configured token

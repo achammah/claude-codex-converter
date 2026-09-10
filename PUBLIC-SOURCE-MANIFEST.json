@@ -22,7 +22,7 @@
     },
     "README.md": {
       "mode": 420,
-      "sha256": "c8c60f0085ad03cc79e64a34e0e83e1a3b4a8e1837f9444d4208742a6f73d5ee"
+      "sha256": "56ca3e480a9ac84ff4fb9b0c291c980bec1dd719e602800aef68c0bdb74819d3"
     },
     "RELEASE-PIPELINE.md": {
       "mode": 420,
@@ -66,7 +66,7 @@
     },
     "converter/doctor.py": {
       "mode": 420,
-      "sha256": "9c2308ad6da1985bd5960010657c492d9a8accd68dd8e655c80079f28292198d"
+      "sha256": "7b87a4ca9cf8a1e09ef6aeba219d0cbe4bf739646d67f18ad739d288f8febce4"
     },
     "converter/hook_timeouts.py": {
       "mode": 420,
@@ -294,7 +294,7 @@
     },
     "tests/test_doctor.py": {
       "mode": 420,
-      "sha256": "41e55625df3bc439df0d00f4fdbcca5e19e5578e408abe57ee0c7ebfdce1815d"
+      "sha256": "b2b413ba5a4937123a54c0708613f30c7c50e46ebba7c65e7205e34ef5fde06f"
     },
     "tests/test_export_public.py": {
       "mode": 420,

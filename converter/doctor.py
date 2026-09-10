@@ -111,7 +111,7 @@ SESSION_RECORD_BYTES = 1024 * 1024
 SESSION_TOTAL_BYTES = 512 * 1024 * 1024
 
 
-def permission_session(path, project):
+def permission_session(path, project, host='claude'):
     """Read only an explicitly selected transcript; never retain message content."""
     path = Path(path).expanduser().resolve()
     result = {'path': str(path), 'status': 'no_matching_mode', 'latest': None,
@@ -164,11 +164,23 @@ def permission_session(path, project):
                 if not isinstance(row, dict):
                     result['malformed_records'] += 1
                     continue
-                if row.get('type') != 'user' or row.get('cwd') != str(project):
-                    continue
-                mode = row.get('permissionMode')
-                if not isinstance(mode, str) or mode not in SOURCE_MODES:
-                    continue
+                if host == 'codex':
+                    payload = row.get('payload')
+                    if row.get('type') != 'turn_context' or not isinstance(payload, dict) or payload.get('cwd') != str(project):
+                        continue
+                    policy = payload.get('approval_policy')
+                    sandbox = payload.get('sandbox_policy')
+                    kind = sandbox.get('type') if isinstance(sandbox, dict) else None
+                    observed = {
+                        'approval_policy': policy if isinstance(policy, str) and policy in APPROVAL_POLICIES else 'unrecognized',
+                        'sandbox_mode': kind if isinstance(kind, str) and kind in {'read-only', 'workspace-write', 'danger-full-access', 'external-sandbox'} else 'unrecognized'}
+                else:
+                    if row.get('type') != 'user' or row.get('cwd') != str(project):
+                        continue
+                    mode = row.get('permissionMode')
+                    if not isinstance(mode, str) or mode not in SOURCE_MODES:
+                        continue
+                    observed = {'permission_mode': mode}
                 stamp = row.get('timestamp')
                 try:
                     if not isinstance(stamp, str) or len(stamp) > 40:
@@ -179,7 +191,7 @@ def permission_session(path, project):
                     stamp = parsed.isoformat()
                 except ValueError:
                     stamp = None
-                result['latest'] = {'line': None if tail else line, 'timestamp': stamp, 'permission_mode': mode}
+                result['latest'] = {'line': None if tail else line, 'timestamp': stamp, **observed}
                 if tail:
                     result['latest']['byte_offset'] = record_offset
                 result['status'] = 'observed'
@@ -189,7 +201,7 @@ def permission_session(path, project):
     return result
 
 
-def permission_summary(project, config, claude_session=None):
+def permission_summary(project, config, claude_session=None, codex_session=None):
     """Saved project settings are evidence of configuration, never running policy."""
     result = {'source_saved': {'status': 'not_found'},
               'target_configured': {'location': '.codex/config.toml'},
@@ -241,10 +253,24 @@ def permission_summary(project, config, claude_session=None):
         if observed and observed['permission_mode'] == 'bypassPermissions' and target['approval_policy'] in {'on-request', 'on-failure', 'untrusted'}:
             findings.append({'code': 'source-session-bypass-target-approvals', 'severity': 'warning',
                              'note': 'The selected Claude session bypasses permissions while target configuration can request approval. Runtime policy is still unverified.'})
+    if codex_session is not None:
+        session = permission_session(codex_session, project, host='codex')
+        result['target_session'] = session
+        if session['status'] == 'unreadable' or not session['complete'] or session['malformed_records'] or session['oversized_records']:
+            findings.append({'code': 'target-session-inspection-incomplete', 'severity': 'warning'})
+        observed = session['latest']
+        if observed:
+            different = [key for key in ('approval_policy', 'sandbox_mode')
+                         if target[key] != 'not_recorded_or_unrecognized' and observed[key] != 'unrecognized'
+                         and target[key] != observed[key]]
+            if different:
+                findings.append({'code': 'target-config-session-policy-mismatch', 'severity': 'warning',
+                                 'fields': different,
+                                 'note': 'The selected Codex turn records different controls from project configuration. No permission changes were applied.'})
     return result, findings
 
 
-def diagnose(project, native_mcp=False, executable='codex', timeout=20, codex_home=None, claude_session=None):
+def diagnose(project, native_mcp=False, executable='codex', timeout=20, codex_home=None, claude_session=None, codex_session=None):
     project = Path(project).expanduser().resolve()
     report = {'schema_version': 1, 'project': str(project), 'findings': [], 'mcp': [],
               'source_preservation': 'archive_directory_present' if (project / '.cue-source-archive').is_dir() else 'not_found',
@@ -262,7 +288,7 @@ def diagnose(project, native_mcp=False, executable='codex', timeout=20, codex_ho
             report['findings'].append({'code': 'config-unreadable-or-invalid', 'severity': 'error'})
     else:
         report['findings'].append({'code': 'target-config-not-found', 'severity': 'error'})
-    report['permissions'], permission_findings = permission_summary(project, config, claude_session)
+    report['permissions'], permission_findings = permission_summary(project, config, claude_session, codex_session)
     report['findings'].extend(permission_findings)
     if 'hooks' in config:
         report['findings'].extend(inspect_hooks(config['hooks'], '.codex/config.toml'))
@@ -319,6 +345,7 @@ def main(argv=None):
     parser.add_argument('--codex', default='codex')
     parser.add_argument('--codex-home', type=Path, help='Compare global hooks from this Codex home; defaults to CODEX_HOME or ~/.codex')
     parser.add_argument('--claude-session', type=Path, help='Inspect only this explicit Claude JSONL for user permission modes with an exact project cwd match; no message content is reported')
+    parser.add_argument('--codex-session', type=Path, help='Inspect only this explicit Codex JSONL for recorded turn approval and sandbox controls; no message content is reported')
     parser.add_argument('--timeout', type=float, default=20)
     parser.add_argument('--report', type=Path)
     args = parser.parse_args(argv)
@@ -330,11 +357,11 @@ def main(argv=None):
         protected = [project / name for name in ('.codex', '.agents', '.claude', '.cue-source-archive')]
         global_home = Path(args.codex_home or os.environ.get('CODEX_HOME') or Path.home() / '.codex').expanduser().resolve()
         protected.extend([global_home, project / '.cue'])
-        if args.claude_session and destination == args.claude_session.expanduser().resolve():
+        if any(session and destination == session.expanduser().resolve() for session in (args.claude_session, args.codex_session)):
             parser.error('--report must not overwrite the inspected session')
         if destination in [project / name for name in ('AGENTS.md', 'CLAUDE.md', 'CLAUDE.local.md', '.mcp.json')] or any(destination.is_relative_to(path) for path in protected):
             parser.error('--report must not overwrite project configuration or preserved sources')
-    report = diagnose(args.project, args.native_mcp, args.codex, args.timeout, args.codex_home, args.claude_session)
+    report = diagnose(args.project, args.native_mcp, args.codex, args.timeout, args.codex_home, args.claude_session, args.codex_session)
     rendered = json.dumps(report, indent=2) + '\n'
     if args.report:
         destination.parent.mkdir(parents=True, exist_ok=True)

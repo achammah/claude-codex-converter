@@ -281,6 +281,63 @@ class DoctorTests(unittest.TestCase):
         report = json.loads(out.getvalue())
         self.assertEqual(report['permissions']['source_session']['latest']['line'], 1)
 
+    def codex_fixture(self):
+        path, _ = self.permission_fixture()
+        row = {'type': 'turn_context', 'timestamp': '2026-09-10T06:07:48Z',
+               'payload': {'cwd': str(self.project.resolve()), 'approval_policy': 'never',
+                           'sandbox_policy': {'type': 'workspace-write', 'writable_roots': ['SECRET']},
+                           'developer_instructions': 'SECRET'}}
+        path.write_text(json.dumps(row) + '\n')
+        return path, row
+
+    def test_codex_session_reports_controls_without_instructions_or_paths(self):
+        path, row = self.codex_fixture()
+        ignored = dict(row, payload=dict(row['payload'], cwd='/other', approval_policy='untrusted'))
+        path.write_text(json.dumps(row) + '\n' + json.dumps(ignored) + '\n')
+        with patch.object(doctor.subprocess, 'run', side_effect=AssertionError('offline')):
+            report = doctor.diagnose(self.project, codex_session=path)
+        latest = report['permissions']['target_session']['latest']
+        self.assertEqual(latest['approval_policy'], 'never')
+        self.assertEqual(latest['sandbox_mode'], 'workspace-write')
+        self.assertEqual(latest['line'], 1)
+        self.assertNotIn('SECRET', json.dumps(report))
+        mismatch = next(x for x in report['findings'] if x['code'] == 'target-config-session-policy-mismatch')
+        self.assertEqual(mismatch['fields'], ['approval_policy'])
+        self.assertEqual(report['permissions']['runtime_parity'], 'not_verified')
+
+    def test_codex_newest_unknown_policy_does_not_reuse_older_grant(self):
+        path, row = self.codex_fixture()
+        newer = dict(row, payload=dict(row['payload'], approval_policy={'SECRET': True}, sandbox_policy='SECRET'))
+        path.write_text(json.dumps(row) + '\n' + json.dumps(newer) + '\n')
+        report = doctor.diagnose(self.project, codex_session=path)
+        latest = report['permissions']['target_session']['latest']
+        self.assertEqual(latest['line'], 2)
+        self.assertEqual(latest['approval_policy'], 'unrecognized')
+        self.assertEqual(latest['sandbox_mode'], 'unrecognized')
+        self.assertNotIn('SECRET', json.dumps(report))
+
+    def test_codex_cli_is_wired_and_cannot_overwrite_session_alias(self):
+        path, _ = self.codex_fixture()
+        with contextlib.redirect_stdout(io.StringIO()) as output:
+            self.assertEqual(doctor.main([str(self.project), '--codex-session', str(path)]), 0)
+        self.assertEqual(json.loads(output.getvalue())['permissions']['target_session']['status'], 'observed')
+        alias = self.project / 'session-alias.json'
+        alias.symlink_to(path)
+        before = path.read_bytes()
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            doctor.main([str(self.project), '--codex-session', str(path), '--report', str(alias)])
+        self.assertEqual(path.read_bytes(), before)
+
+    def test_codex_malformed_and_missing_transcripts_remain_visible(self):
+        path, row = self.codex_fixture()
+        path.write_text('{SECRET\n' + json.dumps(row) + '\n')
+        report = doctor.diagnose(self.project, codex_session=path)
+        self.assertIn('target-session-inspection-incomplete', [x['code'] for x in report['findings']])
+        self.assertEqual(report['permissions']['target_session']['latest']['line'], 2)
+        self.assertNotIn('SECRET', json.dumps(report))
+        missing = doctor.diagnose(self.project, codex_session=path.with_name('absent'))
+        self.assertEqual(missing['permissions']['target_session']['status'], 'unreadable')
+
 
 if __name__ == '__main__':
     unittest.main()
