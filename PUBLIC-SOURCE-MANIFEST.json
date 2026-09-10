@@ -162,7 +162,7 @@
     },
     "native/manifests/0.154.0/manifest.json": {
       "mode": 420,
-      "sha256": "eb0b161ce5317fe13300e393cb3e7a217fee27ce30e921d2057ac8e1f0fb4e2d"
+      "sha256": "804a3bdb146b890ac0e69f2506a458699bff405b7811c64877ccabc263f752f3"
     },
     "native/manifests/0.154.0/normalize_workspace_lock.py": {
       "mode": 420,
@@ -174,7 +174,7 @@
     },
     "native/manifests/0.154.0/status-provider.patch": {
       "mode": 420,
-      "sha256": "a07f41d53567b49012ed647c90089c19f39331026c7b0792a22d5f5139fe8bdb"
+      "sha256": "efe77789aeca0a4525b85c57803244ab01e2206840df1580cc51aa5436a261a2"
     },
     "native/question-form.patch": {
       "mode": 420,

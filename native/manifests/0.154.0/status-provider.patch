@@ -1522,4 +1522,13 @@
 +        "provider child {child_pid} survived task cancellation"
 +    );
 +}
-
+--- a/codex-rs/Cargo.lock
++++ b/codex-rs/Cargo.lock
+@@ -4697,6 +4697,7 @@
+  "codex-utils-path",
+  "codex-utils-path-uri",
+  "codex-utils-plugins",
++ "codex-utils-pty",
+  "codex-utils-sandbox-summary",
+  "codex-utils-sleep-inhibitor",
+  "codex-utils-string",
