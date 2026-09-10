@@ -811,6 +811,7 @@ class Converter:
             raise ValueError('Source occupies reserved runtime directory .converter-runtime')
         runtime_dir.mkdir()
         shutil.copy2(source_dir / 'protocol.py', runtime_dir / 'protocol.py')
+        shutil.copy2(source_dir / 'bash_file_views.py', runtime_dir / 'bash_file_views.py')
         shutil.copy2(source_dir / 'hook_timeouts.py', runtime_dir / 'hook_timeouts.py')
         shutil.copy2(source_dir / 'status_line.py', runtime_dir / 'status_line.py')
         for source, target in [('runtime.py', 'converted_hook.py'), ('activate_skill.py', 'activate_skill.py'), ('ask_user_question.py', 'ask_user_question.py'), ('status_line.py', 'status_line.py'), ('codex_tui.py', 'codex_tui.py')]:

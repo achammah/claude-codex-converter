@@ -14,7 +14,7 @@
     },
     "FINDINGS.md": {
       "mode": 420,
-      "sha256": "e5afdb4b4282a4722592c34fc98cbf42cdfe480c1182ef32317f5d27ca65f05e"
+      "sha256": "65c7462c3d498bca03e63f2c44acc378da2c3ea5d3d56b9ae34799d988cee0ee"
     },
     "LICENSE": {
       "mode": 420,
@@ -44,9 +44,13 @@
       "mode": 420,
       "sha256": "bc9e6c2165397be26ace14848a7bcaf59b22ed5fc57f4ce951c5cb4b44876ee6"
     },
+    "converter/bash_file_views.py": {
+      "mode": 420,
+      "sha256": "8f88e19ce366fb11620d3ff6745a40b097b9d64776251ed73336998a2a1fc8a0"
+    },
     "converter/claude_to_codex.py": {
       "mode": 420,
-      "sha256": "a39fa7a00878949a2f94dd4053dc90bd96c894d2d981a6ad4d75098a153791b3"
+      "sha256": "c8f0b3eaabe48ab72f671fe9fcad2a3a4920017b18eceeb650cf4c9eec7e0ec7"
     },
     "converter/cli.py": {
       "mode": 420,
@@ -106,7 +110,7 @@
     },
     "converter/protocol.py": {
       "mode": 420,
-      "sha256": "494a4d51e5e4c49ae6574f54b5645b2036d60cb878ad40ffdbd11a4b6c6591ed"
+      "sha256": "53afde5586ad1d9403da48191d573e3d67ccc75d60ec21ae3c05545590a316e9"
     },
     "converter/release_pipeline.py": {
       "mode": 420,
@@ -198,7 +202,7 @@
     },
     "scripts/export_public.py": {
       "mode": 420,
-      "sha256": "b8024a560b2a381a9a992daaf25f42b5aee79b739b2e83adae4412f335ef4af3"
+      "sha256": "1713fabb08763f40db5e2291dbd8330b9ccc29cf0f6e969301c707d5221784d0"
     },
     "scripts/release_runner.py": {
       "mode": 420,
@@ -272,6 +276,14 @@
       "mode": 420,
       "sha256": "4c182135f67e5d6dcfc00e11822a73f5d97fad452b0b94ae7cccd99d010f0b21"
     },
+    "tests/test_bash_file_views.py": {
+      "mode": 420,
+      "sha256": "86049a419e371853960d846c18f945909f2e05b515bbff7efee5e3d4996323d9"
+    },
+    "tests/test_bash_permission_views.py": {
+      "mode": 420,
+      "sha256": "914879061032478f82681da8b583947e6691cf45670a6076ae1a7a4b31745623"
+    },
     "tests/test_bidirectional_cli.py": {
       "mode": 420,
       "sha256": "8378c8a6f044418b3b8ee406960a2755799e98d7c07431f3550e2ee55170d6de"
@@ -330,7 +342,7 @@
     },
     "tests/test_native_hook_ask.py": {
       "mode": 420,
-      "sha256": "fdcb716cad67e87612e2b829a93582774108de3d74c0992106349ce699bb2126"
+      "sha256": "f0f46af0f4dcafbe4be18cbb489c36a90da1d8aa5fd1ea49d2d11e0173d9e326"
     },
     "tests/test_native_lockfile_patch.py": {
       "mode": 420,

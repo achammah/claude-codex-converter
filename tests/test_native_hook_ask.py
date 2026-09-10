@@ -15,7 +15,7 @@ class NativeHookAskTests(unittest.TestCase):
         (cue / 'scripts').mkdir(parents=True, exist_ok=True)
         (cue / '.converter-runtime').mkdir(exist_ok=True)
         shutil.copyfile(fixtures.CODE / 'runtime.py', cue / 'scripts/converted_hook.py')
-        for name in ('protocol.py', 'hook_timeouts.py'):
+        for name in ('protocol.py', 'hook_timeouts.py', 'bash_file_views.py'):
             shutil.copyfile(fixtures.CODE / name, cue / '.converter-runtime' / name)
         (cue / 'effective-settings.json').write_text(json.dumps({'permissions': permissions}))
         routes = {event: [{'handler': handler, 'source': 'isolated-test',

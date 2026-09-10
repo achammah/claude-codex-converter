@@ -551,6 +551,21 @@ def permission_match(data, settings, action, project_root=ROOT, rules=None):
     rows = rules if rules is not None else [
         {'action': action, 'rule': rule} for rule in settings.get('permissions', {}).get(action, [])]
     views = patch_events(data) if data.get('tool_name') == 'apply_patch' else [data]
+    # These are restriction-only observations, never a grant or lifecycle event.
+    # Incomplete shell coverage leaves native filesystem enforcement necessary.
+    if action == 'deny' and tool_name(data.get('tool_name')) == 'Bash':
+        ti = data.get('tool_input') or {}
+        command = ti.get('command', ti.get('cmd', ''))
+        cwd = str(data.get('cwd') or project_root)
+        if isinstance(command, str) and os.path.isabs(cwd):
+            from importlib.util import spec_from_file_location, module_from_spec
+            spec = spec_from_file_location('cue_bash_file_views', Path(__file__).with_name('bash_file_views.py'))
+            classifier = module_from_spec(spec)
+            spec.loader.exec_module(classifier)
+            classified = classifier.classify_bash_file_views(command, cwd)
+            for item in classified['views']:
+                views.append({'tool_name': 'Read' if item['access'] == 'read' else 'Edit',
+                              'tool_input': {'file_path': item['path']}, 'cwd': item['cwd']})
     for row in rows:
         if row.get('action') != action:
             continue

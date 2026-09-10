@@ -32,6 +32,9 @@ part of this distribution.
 | A successful native turn can skip untrusted project hooks | Verify actual events and a forced deny, not just process exit | Failed then corrected live host fixtures |
 | Host instruction loading and hook trust are separate | Check native hook registry and disclose pending trust | Native project registry inspection |
 | Model decisions and external state are not deterministic conversion inputs | Restrict repeatability claims to the tested converter boundary | Verification report scope |
+| Exact MCP grants have native per-tool controls | Map exact allow/ask/deny rules to approve/prompt/disabled tools, with deny precedence; preserve reverse mappings and unresolved identities | `tests/test_mcp_permissions.py`, `tests/test_reverse_mcp_permissions.py` |
+| Saved configuration can differ from a recorded Codex turn | Inspect only an explicitly selected transcript; report approval and sandbox controls separately from saved settings and managed-policy claims | `tests/test_doctor.py` |
+| File deny and file ask rules have different Bash scope | Derived literal file views enforce deny only; do not turn file asks into extra Bash prompts or file allows into shell grants | `tests/test_bash_permission_views.py`; isolated Claude 2.1.268 source comparison |
 | Codex lifecycle hooks cap SessionEnd and Interrupt at three seconds | Clamp only the native wrapper; preserve each source timeout and report work that can be interrupted | Startup regression |
 | A large skill catalog can shorten descriptions before prompt assembly | Set the documented catalog budget maximum and preserve complete skill files | Generated-config and prompt-input regression |
 | Project persona disappeared when only provider-specific instructions were copied | Keep the source role in AGENTS.md and answer host/model identity questions accurately | Startup regression |
@@ -83,3 +86,17 @@ Official host contracts were checked against Codex CLI 0.153.4 and the official
 - Shared host staging restores original Claude skill metadata, links agent prompts
   and resources, and clears superseded local entrypoints with installer backups.
   Inherited global hooks and stale rules remain explicit cutover findings.
+
+## Shell file-rule boundary
+
+An isolated Claude 2.1.268 comparison uses generated files and a local canned
+provider. In manual mode without an approval handler, direct Read, Edit, and Bash
+ask controls require approval. Read/Edit ask rules do not propagate to the tested
+cat, head, tail, input-redirection, and explicitly allowed output-redirection calls;
+corresponding deny rules block them. This result is bounded to those tested forms
+and that version, not every shell construct or interactive mode.
+
+The converter checks recognized literal operands and redirects for source denies.
+Dynamic expansion, arbitrary subprocesses, aliases, and recursive traversal remain
+incomplete coverage. Native filesystem restrictions remain necessary; these tests
+do not authorize removing them or claim that native approval dialogs are verified.
