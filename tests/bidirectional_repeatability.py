@@ -72,7 +72,13 @@ def write_jsonl(path: Path, records: list[dict]) -> None:
 
 def reverse_fixture(root: Path) -> None:
     files = {
-        ".codex/config.toml": "model = \"fixture-model\"\nmodel_reasoning_effort = \"low\"\n",
+        ".codex/config.toml": (
+            "model = \"fixture-model\"\nmodel_reasoning_effort = \"low\"\n"
+            "[mcp_servers.fixture]\ncommand = \"fixture-not-executed\"\n"
+            "disabled_tools = [\"delete\"]\n"
+            "[mcp_servers.fixture.tools.read]\napproval_mode = \"approve\"\n"
+            "[mcp_servers.fixture.tools.write]\napproval_mode = \"prompt\"\n"
+        ),
         "AGENTS.md": "Exact root instructions.\r\n",
         "src/AGENTS.md": "Exact nested instructions.\n",
         ".agents/skills/check/SKILL.md": "---\nname: check\ndescription: Check output\n---\nRead reference.md.\n",

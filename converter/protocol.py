@@ -335,9 +335,17 @@ def transcript_view(path, data):
     os.replace(temp, target)
     return str(target)
 
-def fold(event, outputs):
+def native_hook_ask(data):
+    """Only the native event envelope can attest an approval-capable route."""
+    name = str(data.get('tool_name') or '')
+    return (data.get('hook_event_name') == 'PreToolUse'
+            and type(data.get('codex_hook_ask')) is int and data['codex_hook_ask'] == 1
+            and (name in ('Bash', 'apply_patch') or name.startswith('mcp__')))
+
+
+def fold(event, outputs, *, allow_ask=False):
     """Keep every denial/advisory, emit only fields Codex supports for this event."""
-    contexts, messages, denies, rewrites = [], [], [], []
+    contexts, messages, denies, rewrites, asks = [], [], [], [], []
     stopped = False
     stop_reasons = []
     for output in outputs:
@@ -365,7 +373,11 @@ def fold(event, outputs):
             else:
                 denies.append(str(h.get('permissionDecisionReason') or 'Source hook requested an unapproved input rewrite. Resolve its approval requirement before retrying.'))
         elif h.get('permissionDecision') == 'ask':
-            denies.append(str(h.get('permissionDecisionReason') or 'Source hook requires approval that this event cannot express in Codex. Use its native permission adapter before retrying.'))
+            reason = str(h.get('permissionDecisionReason') or 'Source hook requires user approval.')
+            if event == 'PreToolUse' and allow_ask:
+                asks.append(reason)
+            else:
+                denies.append(reason + ' This host has no attested native approval route; the call remains blocked.')
     result = {}
     h = {'hookEventName': event}
     if event in ('Stop', 'SubagentStop'):
@@ -374,12 +386,16 @@ def fold(event, outputs):
         messages.extend(contexts)
     elif contexts:
         h['additionalContext'] = '\n\n'.join(dict.fromkeys(contexts))
+    if asks and rewrites:
+        denies.append('Source hooks combine an approval request with an input rewrite; this combination is not supported.')
     if denies:
         reason = '\n\n'.join(dict.fromkeys(denies))
         if event == 'PreToolUse':
             h.update(permissionDecision='deny', permissionDecisionReason=reason)
         else:
             result.update(decision='block', reason=reason)
+    elif asks and event == 'PreToolUse':
+        h.update(permissionDecision='ask', permissionDecisionReason='\n\n'.join(dict.fromkeys(asks)))
     elif rewrites and event == 'PreToolUse':
         unique = {json.dumps(r, sort_keys=True) for r in rewrites}
         if len(unique) == 1:

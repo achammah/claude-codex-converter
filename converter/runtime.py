@@ -10,7 +10,7 @@ import subprocess
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / '.converter-runtime'))
-from protocol import ROOT, CUE, STATE, atom, atomic_json, fold, health, normalize, patch_events, permitted_exact, permission_match, restricted_command, transcript_view
+from protocol import ROOT, CUE, STATE, atom, atomic_json, fold, health, normalize, native_hook_ask, patch_events, permitted_exact, permission_match, restricted_command, transcript_view
 from hook_timeouts import source_timeout
 
 
@@ -159,6 +159,10 @@ def pre_permission(data, settings, rules=None):
         return fold('PreToolUse', [{'decision': 'block', 'reason': 'Denied by source permission settings.'}])
     asked = permission_match(data, settings, 'ask', ROOT, rules)
     if asked:
+        if native_hook_ask(data):
+            return {'hookSpecificOutput': {'hookEventName': 'PreToolUse',
+                    'permissionDecision': 'ask',
+                    'permissionDecisionReason': 'Source permission settings require user approval.'}}
         return fold('PreToolUse', [{'decision': 'block', 'reason':
             'Source permission settings require user approval. This converted rule has no verified native approval route; '
             'the call remains blocked. Review the permission compatibility finding before retrying.'}])
@@ -188,10 +192,13 @@ def process(data):
         return permission(data, settings, routes, rules)
     if event == 'PostToolUse' and data.get('cue_question_unanswered'):
         return fold(event, dispatch(dict(data, hook_event_name='PostToolUseFailure'), routes))
+    pending_permission = {}
     if event == 'PreToolUse':
         restricted = pre_permission(data, settings, rules)
         if restricted:
-            return restricted
+            if restricted.get('hookSpecificOutput', {}).get('permissionDecision') == 'deny':
+                return restricted
+            pending_permission = restricted
     if event == 'PostToolUse' and data['tool_name'] == 'Bash':
         response = data.get('tool_response') or {}
         if isinstance(response, dict) and response.get('exit_code', 0) not in (None, 0):
@@ -200,6 +207,8 @@ def process(data):
                            is_interrupt=bool(response.get('interrupted')))
             return fold(event, dispatch(failure, routes))
     outputs = dispatch(data, routes)
+    if pending_permission:
+        outputs.append(pending_permission)
     if event == 'PreCompact':
         atomic_json(STATE / 'compaction' / (atom(data.get('session_id')) + '.json'), fold('SessionStart', outputs))
         return {}
@@ -207,7 +216,7 @@ def process(data):
         path = STATE / 'compaction' / (atom(data.get('session_id')) + '.json')
         if path.exists():
             outputs.append(json.loads(path.read_text()))
-    result = fold(event, outputs)
+    result = fold(event, outputs, allow_ask=native_hook_ask(data))
     rewritten = result.get('hookSpecificOutput', {}).get('updatedInput')
     if event == 'PreToolUse' and rewritten is not None:
         if data['tool_name'] in ('Bash', 'apply_patch') and not isinstance(rewritten.get('command'), str):
@@ -215,6 +224,9 @@ def process(data):
         rewritten_event = dict(data, tool_input=rewritten)
         restricted = pre_permission(rewritten_event, settings, rules)
         if restricted:
+            if restricted.get('hookSpecificOutput', {}).get('permissionDecision') == 'ask':
+                return fold(event, [{'decision': 'block', 'reason':
+                    'Source hook rewrite requires approval; combined ask and rewrite is not supported.'}])
             return restricted
     return result
 

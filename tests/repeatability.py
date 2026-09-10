@@ -52,7 +52,7 @@ def fixture(root):
         '.claude/old.bak': 'preserve as archive\n',
         '.mcp.json': json.dumps({'mcpServers': {'fixture': {'command': 'python3', 'args': ['.claude/hooks/check.py']}}}),
     }
-    settings = {'permissions': {'allow': ['Bash(git:*)'], 'ask': ['Bash(sudo *)', 'Edit(/review/**)'],
+    settings = {'permissions': {'allow': ['Bash(git:*)', 'mcp__fixture__read'], 'ask': ['Bash(sudo *)', 'Edit(/review/**)', 'mcp__fixture__write'],
                                'deny': ['Bash(git push *)', 'Read(./secret/**)', 'mcp__fixture__delete']},
                 'hooks': {event: [{'hooks': [{'type': 'command', 'command': 'python3 .claude/hooks/check.py', 'timeout': 120}]}]
                           for event in ('PostToolUseFailure', 'SessionEnd', 'Interrupt')},

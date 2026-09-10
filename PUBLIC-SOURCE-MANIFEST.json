@@ -54,7 +54,7 @@
     },
     "converter/codex_to_claude.py": {
       "mode": 420,
-      "sha256": "081796fc1f9281c93e64ba5a0d14aafbe215096763f32d25170ad2fb64966907"
+      "sha256": "ec0f8f46bc55e5c9c471f03d3f068ab5e0af6aba48c1f35fc51b682d6e2d8b58"
     },
     "converter/codex_tui.py": {
       "mode": 420,
@@ -106,7 +106,7 @@
     },
     "converter/protocol.py": {
       "mode": 420,
-      "sha256": "c41a9499d16a2ca0e3be0324329a8c6dd2ab9040a119174ad15072027fe67396"
+      "sha256": "494a4d51e5e4c49ae6574f54b5645b2036d60cb878ad40ffdbd11a4b6c6591ed"
     },
     "converter/release_pipeline.py": {
       "mode": 420,
@@ -118,7 +118,7 @@
     },
     "converter/runtime.py": {
       "mode": 420,
-      "sha256": "16d7f544a2ea41953680b4e28e058e3f7e6711e5ce38ca0d5c77c0e12f05d161"
+      "sha256": "38e59837862f2aa1b61309ff9cc3744a700831e197d42cd467f1760650aed50e"
     },
     "converter/setup.py": {
       "mode": 420,
@@ -198,7 +198,7 @@
     },
     "scripts/export_public.py": {
       "mode": 420,
-      "sha256": "d7db83bcd9dd87cf90f1ace97680e3247068d65f4eef07a5ce2acb323b1be671"
+      "sha256": "b8024a560b2a381a9a992daaf25f42b5aee79b739b2e83adae4412f335ef4af3"
     },
     "scripts/release_runner.py": {
       "mode": 420,
@@ -206,7 +206,7 @@
     },
     "tests/bidirectional_repeatability.py": {
       "mode": 420,
-      "sha256": "8452865cfbc757b35c8ff8a64c3b4ad8f4be8b2aa033a9082060fc2f4d4cf1b9"
+      "sha256": "0941ced7d7a68d1cdbe1b1aca1dd879ca8de66d8a01303002c133200352495b2"
     },
     "tests/live_managed_update.py": {
       "mode": 420,
@@ -270,7 +270,7 @@
     },
     "tests/repeatability.py": {
       "mode": 420,
-      "sha256": "f8f57ba66667b266021b527b93cfba070192cf9a03af4082b609cc518b53acfd"
+      "sha256": "4c182135f67e5d6dcfc00e11822a73f5d97fad452b0b94ae7cccd99d010f0b21"
     },
     "tests/test_bidirectional_cli.py": {
       "mode": 420,
@@ -328,6 +328,10 @@
       "mode": 420,
       "sha256": "3895d04ed52aa5fc496259d0f936a6fb6814287212d3eda6609b5a48d1bd4a85"
     },
+    "tests/test_native_hook_ask.py": {
+      "mode": 420,
+      "sha256": "fdcb716cad67e87612e2b829a93582774108de3d74c0992106349ce699bb2126"
+    },
     "tests/test_native_lockfile_patch.py": {
       "mode": 420,
       "sha256": "d323e9f88eab48687b17c039a7115bf3c3439b4dfb888127f0ef686bcb425d79"
@@ -367,6 +371,10 @@
     "tests/test_resource_boundaries.py": {
       "mode": 420,
       "sha256": "961bd2afe1e8175d1193d9d6369c1273a31d97bc86e65c4573df11e828337be4"
+    },
+    "tests/test_reverse_mcp_permissions.py": {
+      "mode": 420,
+      "sha256": "1b816c8e7313ac3c752d020ba68895bf4959e338e20af60c84faca1ecc2efb04"
     },
     "tests/test_reverse_setup.py": {
       "mode": 420,

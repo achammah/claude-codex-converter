@@ -261,6 +261,53 @@ def stage_codex_to_claude(source, output, *, strict=False, model_map=None, resto
         servers = config.get('mcp_servers', {})
         if not isinstance(servers, dict):
             raise ValueError('MCP servers must be a table')
+
+        def mcp_permission_rules(name, server):
+            if not {'tools', 'disabled_tools', 'enabled_tools', 'default_tools_approval_mode'} & server.keys():
+                return
+            if 'permissions' not in settings:
+                settings['permissions'] = {'defaultMode': 'plan'}
+                gap('permissions', 'config.toml', 'Exact MCP rules are staged with restrictive plan mode for review. '
+                    'Native approval policy, remembered approvals and managed restrictions are not inferred from per-tool settings.')
+            tools = server.get('tools', {})
+            disabled = server.get('disabled_tools', [])
+            enabled = server.get('enabled_tools')
+            if not isinstance(tools, dict):
+                raise ValueError('MCP tools must be a table')
+            if not isinstance(disabled, list) or any(not isinstance(t, str) for t in disabled):
+                raise ValueError('MCP disabled_tools must be a list of strings')
+            if enabled is not None and (not isinstance(enabled, list) or any(not isinstance(t, str) for t in enabled)):
+                raise ValueError('MCP enabled_tools must be a list of strings')
+            for tool in sorted(set(tools) | set(disabled)):
+                location = 'mcp_servers/' + name + '/tools/' + tool
+                identity = 'mcp__' + name + '__' + tool
+                matches = [candidate for candidate in servers
+                           if identity.startswith('mcp__' + candidate + '__')
+                           and identity[len('mcp__' + candidate + '__'):]]
+                if not re.fullmatch(r'[A-Za-z0-9_.-]+', name) or not re.fullmatch(r'[A-Za-z0-9_.-]+', tool) or len(matches) != 1:
+                    gap('mcp-permission', location, 'Identity is not an unambiguous exact Claude MCP rule; no wildcard or renamed grant is synthesized.')
+                    continue
+                control = tools.get(tool, {})
+                if not isinstance(control, dict):
+                    raise ValueError('MCP tool settings must be a table')
+                for key in sorted(set(control) - {'approval_mode'}):
+                    gap('mcp-tool-setting', location+'/'+key, 'Tool control remains archived; no Claude equivalent inferred.')
+                mode = control.get('approval_mode')
+                if mode not in (None, 'approve', 'prompt'):
+                    gap('mcp-permission', location+'/approval_mode', 'Only explicit approve and prompt modes have an exact tool-rule mapping; other modes remain review gaps.')
+                if tool in disabled:
+                    action = 'deny'
+                elif enabled is not None and tool not in enabled:
+                    gap('mcp-permission', location, 'Tool is excluded by enabled_tools; its approval override is not converted into a Claude grant. The exclusive tool list requires separate review.')
+                    continue
+                elif mode in ('approve', 'prompt'):
+                    action = 'allow' if mode == 'approve' else 'ask'
+                else:
+                    continue
+                bucket = settings['permissions'].setdefault(action, [])
+                if identity not in bucket:
+                    bucket.append(identity)
+
         for name, server in sorted(servers.items()):
             if not isinstance(server, dict):
                 raise ValueError('Invalid MCP server definition')
@@ -280,7 +327,8 @@ def stage_codex_to_claude(source, output, *, strict=False, model_map=None, resto
             mcp[name] = entry
             if server.get('enabled') is False:
                 settings.setdefault('disabledMcpjsonServers', []).append(name)
-            for key in sorted(set(server)-{'command', 'args', 'env', 'url', 'http_headers', 'enabled'}):
+            mcp_permission_rules(name, server)
+            for key in sorted(set(server)-{'command', 'args', 'env', 'url', 'http_headers', 'enabled', 'tools', 'disabled_tools'}):
                 gap('mcp-setting', 'mcp_servers/'+name+'/'+key, 'Unmapped server field remains in private source archive.')
         if mcp:
             dump('.mcp.json', {'mcpServers': mcp})
