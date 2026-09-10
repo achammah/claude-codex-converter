@@ -21,6 +21,88 @@ TARGETS = {
 CHECKS = {'native_tests', 'cli_helper_execution', 'question_ui', 'update_route', 'update_rollback'}
 
 
+CAPABILITY_CHECKS = {
+    'CUE_FD_CAPACITY_V1': ('resource_capacity',),
+    'CUE_HOOK_ASK_V1': ('hook_ask', 'hook_deadlines'),
+}
+CAPABILITY_SCRIPTS = {'resource_capacity': 'resource_capacity.py',
+                      'hook_ask': 'hook_ask.py', 'hook_deadlines': 'hook_deadlines.py'}
+
+
+def consent_cases():
+    return {(tool, decision, sandbox, permission, reviewer, outcome)
+            for tool in ('shell', 'patch', 'mcp')
+            for decision in ('approve', 'cancel', 'never')
+            for sandbox in ('danger-full-access', 'workspace-write')
+            for permission in ('none', 'allow')
+            for reviewer, outcome in (('user', 'allow'), ('auto_review', 'allow'), ('auto_review', 'deny'))}
+
+
+def capability_markers(cue, binary, reviewed=()):
+    markers = set(managed_update.required_markers(cue)) | set(reviewed)
+    markers.update(m for m in managed_update.OPTIONAL_MARKERS if m.encode() in binary)
+    unknown = markers - set(managed_update.REQUIRED_MARKERS) - set(CAPABILITY_CHECKS)
+    if unknown:
+        raise ValueError('No release verification policy for native capability: '+', '.join(sorted(unknown)))
+    return sorted(markers)
+
+
+def validate_capability_checks(markers, checks, binding, binary_sha):
+    required = {name for marker in markers for name in CAPABILITY_CHECKS.get(marker, ())}
+    subchecks = checks.get('native_tests', {}).get('subchecks', {})
+    for name in sorted(required):
+        item = subchecks.get(name, {})
+        report = item.get('report', {})
+        if (item.get('passed') is not True or item.get('binding') != binding
+                or item.get('binarySha256') != binary_sha
+                or report.get('binary_sha256') != binary_sha or report.get('passed') is not True
+                or item.get('reportSha256') != sha(canonical(report))
+                or any(not re.fullmatch(r'[a-f0-9]{64}', item.get(k, ''))
+                       for k in ('logSha256', 'scriptSha256'))):
+            raise ValueError('Missing or unbound capability evidence: '+name)
+        if name == 'hook_ask':
+            cases = report.get('cases', [])
+            keys = [(c.get('tool'), c.get('decision'), c.get('sandbox'), c.get('permission_hook'),
+                     c.get('reviewer'), c.get('reviewer_outcome')) for c in cases]
+            if len(keys) != len(consent_cases()) or set(keys) != consent_cases():
+                raise ValueError('Incomplete HookAsk consent coverage')
+            for c in cases:
+                if not all(c.get(k) is True for k in ('passed', 'hook_observed', 'native_ask_attested', 'finished')):
+                    raise ValueError('HookAsk observation failed')
+                denied = c['decision'] == 'never' or (c['reviewer'] == 'auto_review'
+                    and c['reviewer_outcome'] == 'deny' and c['sandbox'] == 'workspace-write')
+                if denied:
+                    if c.get('approval_visible') is not False or c.get('executed') is not False:
+                        raise ValueError('Denied HookAsk action executed or presented approval')
+                elif (c.get('approval_visible') is not True or c.get('no_execution_before_approval') is not True
+                      or c.get('executed') is not (c['decision'] == 'approve')):
+                    raise ValueError('HookAsk consent ordering failed')
+                if c['reviewer'] == 'auto_review' and c['decision'] != 'never' and c['sandbox'] == 'workspace-write':
+                    if type(c.get('reviewer_requests')) is not int or c['reviewer_requests'] < 1:
+                        raise ValueError('Automatic reviewer was not exercised')
+                    if c['reviewer_outcome'] == 'allow' and c.get('reviewer_before_human_ui') is not True:
+                        raise ValueError('Reviewer did not precede human consent')
+                if c['permission_hook'] == 'allow' and c['decision'] != 'never' and c.get('permission_hook_observed') is not True:
+                    raise ValueError('PermissionRequest allow hook was not exercised')
+        elif name == 'hook_deadlines':
+            cases = report.get('cases', [])
+            if len(cases) != 2 or {(c.get('configured_seconds'), c.get('delay_seconds')) for c in cases} != {(1, 3), (130, 123)}:
+                raise ValueError('Incomplete native deadline coverage')
+            for c in cases:
+                timeout = c['configured_seconds'] == 1
+                if (not all(c.get(k) is True for k in ('passed', 'hook_observed', 'finished'))
+                        or c.get('hook_completed') is not (not timeout) or c.get('timeout_reported') is not timeout
+                        or type(c.get('model_requests')) is not int or c['model_requests'] < 2):
+                    raise ValueError('Native deadline observation failed')
+        elif name == 'resource_capacity':
+            provider = report.get('provider') or {}
+            if (report.get('initial_soft') != 256 or report.get('status_rendered') is not True
+                    or provider.get('opened') != 700 or type(provider.get('soft')) is not int
+                    or provider['soft'] < 1024 or 'initial_hard' not in report
+                    or provider.get('hard') != report['initial_hard'] or provider.get('error', 'missing') is not None):
+                raise ValueError('Native resource capacity observation failed')
+
+
 def canonical(value):
     return (json.dumps(value, sort_keys=True, separators=(',', ':')) + '\n').encode()
 
@@ -112,6 +194,7 @@ def validate_patches(source, manifest_path):
         diff = run(['git', 'diff', '--binary', 'HEAD'], tmp).stdout.encode()
     return {'schemaVersion': 1, 'passed': True, 'commit': commit,
             'manifestSha256': sha(manifest_path.read_bytes()), **application,
+            'requiredCapabilities': manifest.get('required_capabilities', []),
             'patchedDiffSha256': sha(diff), 'scope': 'patch application only; no build or runtime claim'}
 
 
@@ -146,7 +229,8 @@ def package(root, candidate, patch_proof, evidence, output, base_url):
         raise ValueError('Patch proof does not match candidate')
     if tuple(p.get('marker') for p in patch_proof.get('patches', [])) != managed_update.REQUIRED_MARKERS:
         raise ValueError('Patch proof lacks required patches')
-    markers = managed_update.required_markers(cue)
+    binary = (root/'bin/codex').read_bytes()
+    markers = capability_markers(cue, binary, patch_proof.get('requiredCapabilities', []))
     if set(markers) - set(managed_update.REQUIRED_MARKERS) and cue.get('capabilityPolicyVersion') != 1:
         raise ValueError('Candidate updater cannot preserve native capabilities')
     files = inventory(root)
@@ -162,6 +246,7 @@ def package(root, candidate, patch_proof, evidence, output, base_url):
     checks = evidence.get('checks', {})
     if set(checks) != CHECKS or any(checks[k].get('passed') is not True or not re.fullmatch(r'[a-f0-9]{64}', checks[k].get('logSha256', '')) for k in CHECKS):
         raise ValueError('Required runtime checks have not passed')
+    validate_capability_checks(markers, checks, binding, files['bin/codex']['sha256'])
     output.mkdir(parents=True, exist_ok=True)
     archive_name = 'runtime-' + target + '-' + str(cue['sequence']) + '.zip'
     archive = output/archive_name

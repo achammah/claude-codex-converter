@@ -69,11 +69,50 @@ def smoke(name, argv, work, env=None):
             'reportSha256': pipeline.sha((directory/'report.json').read_bytes())}
 
 
-def stage_manager(package, metadata, *, target, release_id, sequence, feed_url):
+def stage_manager(package, metadata, *, target, release_id, sequence, feed_url, required_capabilities=()):
     """Use the caller's complete release identity without adding another suffix."""
     managed_update.stage_manager(package, metadata, target=target,
         runtime_source=Path(native_runtime.__file__), release_id=release_id,
-        sequence=sequence, feed_url=feed_url)
+        sequence=sequence, feed_url=feed_url, required_capabilities=required_capabilities)
+
+
+def bound_capability(name, report, logs, binding, binary_sha):
+    if report.get('passed') is not True or report.get('binary_sha256') != binary_sha:
+        raise ValueError('Capability probe did not exercise the candidate: '+name)
+    script = ROOT/'tests/native_smoke'/pipeline.CAPABILITY_SCRIPTS[name]
+    return {'passed': True, 'binding': binding, 'binarySha256': binary_sha,
+            'report': report, 'reportSha256': pipeline.sha(pipeline.canonical(report)),
+            'scriptSha256': pipeline.sha(script.read_bytes()),
+            'logSha256': pipeline.sha(pipeline.canonical(logs)), 'logs': logs}
+
+
+def run_capabilities(markers, package, work, env, binding, binary_sha):
+    result = {}
+    required = {name for marker in markers for name in pipeline.CAPABILITY_CHECKS.get(marker, ())}
+    for name in sorted(required):
+        script = ROOT/'tests/native_smoke'/pipeline.CAPABILITY_SCRIPTS[name]
+        logs = []
+        if name == 'hook_ask':
+            cases = []
+            configs = sorted({case[2:] for case in pipeline.consent_cases()})
+            for index, (sandbox, permission, reviewer, outcome) in enumerate(configs):
+                label = 'hook_ask-'+str(index)
+                logs.append(smoke(label, [sys.executable, str(script), '--package', str(package),
+                    '--tool', 'all', '--decision', 'all', '--sandbox', sandbox,
+                    '--permission-hook', permission, '--reviewer', reviewer,
+                    '--reviewer-outcome', outcome], work, env))
+                report = pipeline.read(work/label/'report.json')
+                if report.get('binary_sha256') != binary_sha:
+                    raise ValueError('HookAsk report belongs to a different binary')
+                cases.extend(report.get('cases', []))
+            report = {'passed': True, 'binary_sha256': binary_sha, 'cases': cases,
+                'scope': '108 supported-axis cases; full-access auto-deny exercises human consent, constrained auto-deny exercises reviewer denial'}
+        else:
+            logs.append(smoke(name, [sys.executable, str(script), '--package', str(package)], work, env))
+            report = pipeline.read(work/name/'report.json')
+        result[name] = bound_capability(name, report, logs, binding, binary_sha)
+    pipeline.validate_capability_checks(markers, {'native_tests': {'subchecks': result}}, binding, binary_sha)
+    return result
 
 
 def attribution_name(name):
@@ -245,9 +284,17 @@ def run(args):
     metadata = {'layoutVersion': 1, 'version': candidate['version'], 'target': target,
                 'variant': 'codex', 'entrypoint': 'bin/codex', 'resourcesDir': 'codex-resources', 'pathDir': 'codex-path'}
     stage_manager(package, metadata, target=work/'installed/codex', release_id=args.release_id,
-        sequence=args.sequence, feed_url=args.feed_url)
+        sequence=args.sequence, feed_url=args.feed_url, required_capabilities=manifest.get("required_capabilities", []))
     pipeline.write(package/'codex-package.json', metadata)
     before = pipeline.inventory(package)
+    cue = metadata['cueUpdate']
+    binding = {'candidateSha256': pipeline.sha(pipeline.canonical(candidate)),
+        'patchProofSha256': pipeline.sha(pipeline.canonical(proof)),
+        'inventorySha256': pipeline.sha(pipeline.canonical(before)), 'target': target,
+        'releaseId': cue['releaseId'], 'sequence': cue['sequence']}
+    markers = pipeline.capability_markers(cue, (package/'bin/codex').read_bytes(), manifest.get('required_capabilities', []))
+    if any(marker.encode() not in (package/'bin/codex').read_bytes() for marker in markers):
+        raise ValueError('Missing required candidate capability marker')
     native_log = work/'native-tests.log'
     native_digest = execute(['cargo', 'test', '--locked', '--release', '-j1', '-p',
         'codex-install-context', '-p', 'codex-tui', '--lib'], cargo_root, native_log, env)
@@ -256,10 +303,8 @@ def run(args):
     checks = {'native_tests': {'passed': True, 'logSha256': native_digest}}
     focused = smoke('native_focused', [sys.executable, str(ROOT/'tests/native_smoke/native_tests.py'),
         '--source', str(source), '--cargo', 'cargo', '--target-dir', str(work/'focused-target')], work, env)
-    capacity = smoke('native_resource_capacity',
-        [sys.executable, str(ROOT/'tests/native_smoke/resource_capacity.py'), '--package', str(package)], work, env)
-    native_checks = {'full_library_tests': checks['native_tests'],
-                     'focused_actual_modules': focused, 'resource_capacity': capacity}
+    native_checks = {'full_library_tests': checks['native_tests'], 'focused_actual_modules': focused}
+    native_checks.update(run_capabilities(markers, package, work, env, binding, before['bin/codex']['sha256']))
     pipeline.write(work/'native-tests-combined.json', native_checks)
     checks['native_tests'] = {'passed': True,
         'logSha256': pipeline.sha((work/'native-tests-combined.json').read_bytes()), 'subchecks': native_checks}
@@ -277,12 +322,8 @@ def run(args):
                               'subchecks': combined}
     if pipeline.inventory(package) != before:
         raise ValueError('Runtime checks mutated candidate package')
-    cue = metadata['cueUpdate']
     evidence = {'schemaVersion': 1, 'scope': 'native current host only; no cross-platform claim',
-        'binding': {'candidateSha256': pipeline.sha(pipeline.canonical(candidate)),
-        'patchProofSha256': pipeline.sha(pipeline.canonical(proof)),
-        'inventorySha256': pipeline.sha(pipeline.canonical(before)), 'target': target,
-        'releaseId': cue['releaseId'], 'sequence': cue['sequence']}, 'checks': checks}
+        'binding': binding, 'checks': checks}
     pipeline.write(output/'candidate.json', candidate)
     pipeline.write(output/'evidence.json', evidence)
     return evidence
