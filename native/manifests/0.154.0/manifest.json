@@ -1,0 +1,46 @@
+{
+  "schema_version": 1,
+  "release_sequence": 2,
+  "upstream_commit": "6b9826e3aa83b1a5947db50f4332cb9c65f1b340",
+  "patch_sha256": "a07f41d53567b49012ed647c90089c19f39331026c7b0792a22d5f5139fe8bdb",
+  "patch_file": "status-provider.patch",
+  "feature_marker": "native-status-provider-v1",
+  "additional_patches": [
+    {
+      "patch_file": "question-form.patch",
+      "patch_sha256": "7c6c7b783b8b1913e0e7099e5ee5a25f9df05d166d51ba4b9605db0e1b0e058c",
+      "feature_marker": "CUE_QUESTION_UI_V1"
+    },
+    {
+      "patch_file": "managed-updater.patch",
+      "patch_sha256": "857b4c79fd814bb5d7c533601983506d8c726d183233a382bdca4319a8685e18",
+      "feature_marker": "CUE_MANAGED_UPDATE_V1"
+    }
+  ],
+  "sourcePreparation": {
+    "program": "normalize_workspace_lock.py",
+    "sha256": "e3da867ddc590066904887bc831250154d9a27ed0c4a941ede4e6f0e5cf90459"
+  },
+  "official_companion_packages": {
+    "darwin-arm64": {
+      "version": "0.154.0-darwin-arm64",
+      "url": "https://registry.npmjs.org/@openai/codex/-/codex-0.154.0-darwin-arm64.tgz",
+      "integrity": "sha512-HP/vJCH/t2hB9Kg6hotN9UglClJ6/z584fal5lEP14C9gNAgAQS4/kTQC7l5V+BA3TqwDPwINSjul28cX8AYXg=="
+    },
+    "darwin-x64": {
+      "version": "0.154.0-darwin-x64",
+      "url": "https://registry.npmjs.org/@openai/codex/-/codex-0.154.0-darwin-x64.tgz",
+      "integrity": "sha512-2aqz+72Hop8PF2RYglQ4JnGjm3OlRIrTykJIT0hyLeUgM6NCFy09RgTmqRCoWliKQZjEn9jjZqUEp7QujAj77g=="
+    },
+    "linux-arm64": {
+      "version": "0.154.0-linux-arm64",
+      "url": "https://registry.npmjs.org/@openai/codex/-/codex-0.154.0-linux-arm64.tgz",
+      "integrity": "sha512-KmTCB6ST484zeYlPpKP/K5P/gRaYmt6TihVD+zotoe6O9q0JSBP+FYvCz4A/zZXR7xDOHURTSjHp0sD8wWS0YQ=="
+    },
+    "linux-x64": {
+      "version": "0.154.0-linux-x64",
+      "url": "https://registry.npmjs.org/@openai/codex/-/codex-0.154.0-linux-x64.tgz",
+      "integrity": "sha512-a4FI3A8sGtwGrOqltrPbrS2hajrHQG591EwmRfiRoLMb10VxdBtUGW4gu6IJVYENiYGA7k3P4jlRHEoCZU/s9Q=="
+    }
+  }
+}

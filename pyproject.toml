@@ -1,0 +1,27 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "claude-codex-converter"
+dynamic = ["version"]
+description = "Auditable bidirectional Claude and Codex setup and conversation conversion"
+readme = "README.md"
+requires-python = ">=3.11"
+license = {text = "MIT"}
+dependencies = ["PyYAML>=6.0.3,<7"]
+classifiers = ["Programming Language :: Python :: 3", "Operating System :: POSIX"]
+
+[project.scripts]
+claude-codex-converter = "cue_converter.cli:main"
+
+[tool.setuptools]
+packages = ["cue_converter", "cue_converter.native"]
+package-dir = {cue_converter = "converter", "cue_converter.native" = "native"}
+
+[tool.setuptools.package-data]
+cue_converter = ["*.md"]
+"cue_converter.native" = ["*.json", "*.patch", "LICENSE*", "NOTICE*", "manifests/*/*"]
+
+[tool.setuptools.dynamic]
+version = {attr = "cue_converter.version.VERSION"}

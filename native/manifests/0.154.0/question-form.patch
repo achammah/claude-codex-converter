@@ -1,0 +1,1108 @@
+diff --git a/codex-rs/tui/src/bottom_pane/mcp_server_elicitation.rs b/codex-rs/tui/src/bottom_pane/mcp_server_elicitation.rs
+--- a/codex-rs/tui/src/bottom_pane/mcp_server_elicitation.rs
++++ b/codex-rs/tui/src/bottom_pane/mcp_server_elicitation.rs
+@@ -1,3 +1,5 @@
++mod cue_questions;
++
+ use std::collections::HashSet;
+ use std::collections::VecDeque;
+ use std::path::PathBuf;
+@@ -112,6 +114,11 @@
+ 
+ #[derive(Clone, Debug, PartialEq)]
+ enum McpServerElicitationFieldInput {
++    CueQuestion {
++        options: Vec<McpServerElicitationOption>,
++        multi: bool,
++        custom_field: Option<String>,
++    },
+     Select {
+         options: Vec<McpServerElicitationOption>,
+         default_idx: Option<usize>,
+@@ -179,6 +186,8 @@
+ 
+ #[derive(Default)]
+ struct McpServerElicitationAnswerState {
++    chosen: Vec<usize>,
++    custom_focus: bool,
+     selection: ScrollState,
+     draft: ComposerDraft,
+     answer_committed: bool,
+@@ -339,7 +348,15 @@
+         } else {
+             (
+                 McpServerElicitationResponseMode::FormContent,
+-                parse_fields_from_schema(&requested_schema)?,
++                if !is_tool_approval
++                    && tool_suggestion.is_none()
++                    && meta.and_then(|m| m.get("io.cue/questions")).is_some()
++                {
++                    cue_questions::parse(&requested_schema, meta?)
++                        .or_else(|| parse_fields_from_schema(&requested_schema))?
++                } else {
++                    parse_fields_from_schema(&requested_schema)?
++                },
+             )
+         };
+ 
+@@ -786,11 +803,17 @@
+                         selection.selected_idx = default_idx.or(Some(0));
+                         (ComposerDraft::default(), default_idx.is_some())
+                     }
++                    McpServerElicitationFieldInput::CueQuestion { options, .. } => {
++                        selection.selected_idx = (!options.is_empty()).then_some(0);
++                        (ComposerDraft::default(), false)
++                    }
+                     McpServerElicitationFieldInput::Text { .. } => {
+                         (ComposerDraft::default(), false)
+                     }
+                 };
+                 McpServerElicitationAnswerState {
++                    chosen: Vec::new(),
++                    custom_focus: matches!(&field.input, McpServerElicitationFieldInput::CueQuestion { options, .. } if options.is_empty()),
+                     selection,
+                     draft,
+                     answer_committed,
+@@ -922,7 +945,10 @@
+ 
+     fn current_options(&self) -> &[McpServerElicitationOption] {
+         match self.current_field().map(|field| &field.input) {
+-            Some(McpServerElicitationFieldInput::Select { options, .. }) => options.as_slice(),
++            Some(
++                McpServerElicitationFieldInput::Select { options, .. }
++                | McpServerElicitationFieldInput::CueQuestion { options, .. },
++            ) => options.as_slice(),
+             _ => &[],
+         }
+     }
+@@ -933,13 +959,28 @@
+             .iter()
+             .enumerate()
+             .map(|(idx, option)| {
+-                let prefix = if selected_idx.is_some_and(|selected| selected == idx) {
++                let prefix = if selected_idx.is_some_and(|selected| selected == idx)
++                    && !(self.is_cue_question()
++                        && self.current_answer().is_some_and(|a| a.custom_focus))
++                {
+                     '›'
+                 } else {
+                     ' '
+                 };
+                 let number = idx + 1;
+-                let prefix_label = format!("{prefix} {number}. ");
++                let marker = if self.is_cue_question() {
++                    if self
++                        .current_answer()
++                        .is_some_and(|a| a.chosen.contains(&idx))
++                    {
++                        "[x] "
++                    } else {
++                        "[ ] "
++                    }
++                } else {
++                    ""
++                };
++                let prefix_label = format!("{prefix} {number}. {marker}");
+                 let wrap_indent = UnicodeWidthStr::width(prefix_label.as_str());
+                 GenericDisplayRow {
+                     name: format!("{prefix_label}{}", option.label),
+@@ -989,6 +1030,9 @@
+     }
+ 
+     fn footer_tips(&self) -> Vec<FooterTip> {
++        if self.is_cue_question() {
++            return self.cue_footer();
++        }
+         let mut tips = Vec::new();
+         let is_last_field = self.current_index().saturating_add(1) >= self.field_count();
+         let submit_hint = if self.current_field_is_select() {
+@@ -1043,6 +1087,11 @@
+     }
+ 
+     fn input_height(&self, width: u16) -> u16 {
++        if self.is_cue_question() {
++            return self
++                .options_required_height(width)
++                .saturating_add(MIN_COMPOSER_HEIGHT + 1);
++        }
+         if self.current_field_is_select() {
+             return self.options_required_height(width);
+         }
+@@ -1076,6 +1125,7 @@
+         let field = self.request.fields.get(idx)?;
+         let answer = self.answers.get(idx)?;
+         match &field.input {
++            McpServerElicitationFieldInput::CueQuestion { .. } => self.cue_field_value(idx),
+             McpServerElicitationFieldInput::Select { options, .. } => {
+                 if !answer.answer_committed {
+                     return None;
+@@ -1200,20 +1250,25 @@
+             self.advance_queue_or_complete();
+             return;
+         }
+-        let content = self
++        let mut content = self
+             .request
+             .fields
+             .iter()
+             .enumerate()
+             .filter_map(|(idx, field)| self.field_value(idx).map(|value| (field.id.clone(), value)))
+             .collect::<serde_json::Map<_, _>>();
++        self.cue_content(&mut content);
+         self.app_event_tx.resolve_elicitation(
+             self.request.thread_id,
+             self.request.server_name.clone(),
+             self.request.request_id.clone(),
+             McpServerElicitationAction::Accept,
+             Some(Value::Object(content)),
+-            /*meta*/ None,
++            if self.is_cue_question() {
++                Some(serde_json::json!({"io.cue/questions": {"version": 1}}))
++            } else {
++                None
++            },
+         );
+         self.advance_queue_or_complete();
+     }
+@@ -1317,6 +1372,10 @@
+     }
+ 
+     fn render_input(&self, area: Rect, buf: &mut Buffer) {
++        if self.is_cue_question() {
++            self.render_cue_input(area, buf);
++            return;
++        }
+         if area.width == 0 || area.height == 0 {
+             return;
+         }
+@@ -1425,6 +1484,8 @@
+ 
+         let min_input_height = if self.current_field_is_select() {
+             u16::from(remaining > 0)
++        } else if self.is_cue_question() {
++            (MIN_COMPOSER_HEIGHT + 1).min(remaining)
+         } else {
+             MIN_COMPOSER_HEIGHT.min(remaining)
+         };
+@@ -1464,7 +1525,12 @@
+         let progress_line = if self.field_count() > 0 {
+             let idx = self.current_index() + 1;
+             let total = self.field_count();
+-            let base = format!("Field {idx}/{total}");
++            let noun = if self.is_cue_question() {
++                "Question"
++            } else {
++                "Field"
++            };
++            let base = format!("{noun} {idx}/{total}");
+             if unanswered > 0 {
+                 Line::from(format!("{base} ({unanswered} required unanswered)").dim())
+             } else {
+@@ -1493,7 +1559,12 @@
+         remaining = remaining.saturating_sub(u16::from(remaining > 0));
+         let footer_height = (footer_lines.len() as u16).min(remaining.saturating_sub(1));
+         remaining = remaining.saturating_sub(footer_height);
+-        let min_input_height = MIN_COMPOSER_HEIGHT.min(remaining);
++        let min_input_height = if self.is_cue_question() {
++            MIN_COMPOSER_HEIGHT + 1
++        } else {
++            MIN_COMPOSER_HEIGHT
++        }
++        .min(remaining);
+         let mut input_height = min_input_height;
+         remaining = remaining.saturating_sub(input_height);
+         let prompt_height = (prompt_lines.len() as u16).min(remaining);
+@@ -1508,7 +1579,11 @@
+             width: content_area.width,
+             height: input_height,
+         };
+-        self.composer.cursor_pos(input_area)
++        self.composer.cursor_pos(if self.is_cue_question() {
++            self.cue_composer_area(input_area)
++        } else {
++            input_area
++        })
+     }
+ }
+ 
+@@ -1526,6 +1601,10 @@
+     }
+ 
+     fn handle_key_event(&mut self, key_event: KeyEvent) {
++        if self.is_cue_question() {
++            self.handle_cue_key(key_event);
++            return;
++        }
+         if key_event.kind == KeyEventKind::Release {
+             return;
+         }
+@@ -1665,6 +1744,11 @@
+     }
+ 
+     fn on_ctrl_c(&mut self) -> CancellationEvent {
++        if self.is_cue_question() {
++            self.dispatch_cancel();
++            self.advance_queue_or_complete();
++            return CancellationEvent::Handled;
++        }
+         if !self.current_field_is_select() && !self.composer.current_text_with_pending().is_empty()
+         {
+             self.clear_current_draft();
+@@ -1680,6 +1764,19 @@
+     }
+ 
+     fn handle_paste(&mut self, pasted: String) -> bool {
++        if self.is_cue_question() && !pasted.is_empty() {
++            let multi = matches!(
++                self.current_field().map(|f| &f.input),
++                Some(McpServerElicitationFieldInput::CueQuestion { multi: true, .. })
++            );
++            if let Some(a) = self.current_answer_mut() {
++                a.custom_focus = true;
++                if !multi {
++                    a.chosen.clear();
++                }
++                a.answer_committed = false;
++            }
++        }
+         if pasted.is_empty() || self.current_field_is_select() {
+             return false;
+         }
+diff --git a/codex-rs/tui/src/bottom_pane/mcp_server_elicitation/cue_questions.rs b/codex-rs/tui/src/bottom_pane/mcp_server_elicitation/cue_questions.rs
+new file mode 100644
+--- /dev/null
++++ b/codex-rs/tui/src/bottom_pane/mcp_server_elicitation/cue_questions.rs
+@@ -0,0 +1,687 @@
++//! Explicit, versioned question presentation. Ordinary MCP/approval forms never use this path.
++use super::*;
++
++#[used]
++#[unsafe(no_mangle)]
++pub static CUE_QUESTION_UI_V1: [u8; 19] = *b"CUE_QUESTION_UI_V1\0";
++
++pub(super) fn parse(schema: &Value, meta: &Value) -> Option<Vec<McpServerElicitationField>> {
++    // Keep the protocol capability marker observable in the installed executable.
++    std::hint::black_box(&CUE_QUESTION_UI_V1);
++    let hint = meta.get("io.cue/questions")?;
++    if hint.get("version")?.as_u64()? != 1 {
++        return None;
++    }
++    let rows = hint.get("questions")?.as_array()?;
++    if rows.is_empty() {
++        return None;
++    }
++    let properties = schema.get("properties")?.as_object()?;
++    let mut seen = HashSet::new();
++    let mut fields = Vec::new();
++    for row in rows {
++        let id = row.get("id")?.as_str()?;
++        if !seen.insert(id.to_owned()) {
++            return None;
++        }
++        let property = properties.get(id)?;
++        if property.get("format").and_then(Value::as_str) == Some("password") {
++            return None;
++        }
++        let multi = row.get("multiSelect")?.as_bool()?;
++        let custom = match row.get("customField") {
++            Some(value) => Some(value.as_str()?),
++            None => None,
++        };
++        let mut options = Vec::new();
++        if let Some(custom) = custom {
++            if !seen.insert(custom.to_owned()) {
++                return None;
++            }
++            let other = properties.get(custom)?;
++            if other.get("format").and_then(Value::as_str) == Some("password") {
++                return None;
++            }
++            if schema
++                .get("required")
++                .and_then(Value::as_array)
++                .is_some_and(|r| {
++                    r.iter()
++                        .any(|v| v.as_str() == Some(id) || v.as_str() == Some(custom))
++                })
++            {
++                return None;
++            }
++            if other.get("type")?.as_str()? != "string" {
++                return None;
++            }
++            let option_schema = if multi {
++                if property.get("type")?.as_str()? != "array" {
++                    return None;
++                }
++                property.get("items")?
++            } else {
++                property
++            };
++            if option_schema
++                .get("type")
++                .and_then(Value::as_str)
++                .is_some_and(|t| t != "string")
++            {
++                return None;
++            }
++            if let Some(values) = option_schema.get("enum").and_then(Value::as_array) {
++                let names = option_schema.get("enumNames").and_then(Value::as_array);
++                for (idx, value) in values.iter().enumerate() {
++                    let value = value.as_str()?;
++                    options.push(McpServerElicitationOption {
++                        label: names
++                            .and_then(|n| n.get(idx))
++                            .and_then(Value::as_str)
++                            .unwrap_or(value)
++                            .to_owned(),
++                        description: None,
++                        value: Value::String(value.to_owned()),
++                    });
++                }
++            } else {
++                let values = option_schema
++                    .get("oneOf")
++                    .or_else(|| option_schema.get("anyOf"))?
++                    .as_array()?;
++                for value in values {
++                    options.push(McpServerElicitationOption {
++                        label: value.get("title")?.as_str()?.to_owned(),
++                        description: None,
++                        value: Value::String(value.get("const")?.as_str()?.to_owned()),
++                    });
++                }
++            }
++            if options.is_empty() {
++                return None;
++            }
++        } else if multi
++            || property.get("type")?.as_str()? != "string"
++            || property.get("enum").is_some()
++            || property.get("oneOf").is_some()
++        {
++            return None;
++        }
++        fields.push(McpServerElicitationField {
++            id: id.to_owned(),
++            label: property
++                .get("title")
++                .and_then(Value::as_str)
++                .unwrap_or(id)
++                .to_owned(),
++            prompt: property
++                .get("description")
++                .and_then(Value::as_str)
++                .unwrap_or("")
++                .to_owned(),
++            required: true,
++            input: McpServerElicitationFieldInput::CueQuestion {
++                options,
++                multi,
++                custom_field: custom.map(ToOwned::to_owned),
++            },
++        });
++    }
++    // An explicit hint must describe the entire form; never discard an unmarked field.
++    if seen.len() != properties.len() {
++        return None;
++    }
++    Some(fields)
++}
++impl McpServerElicitationOverlay {
++    pub(super) fn is_cue_question(&self) -> bool {
++        matches!(
++            self.current_field().map(|f| &f.input),
++            Some(McpServerElicitationFieldInput::CueQuestion { .. })
++        )
++    }
++    pub(super) fn cue_field_value(&self, idx: usize) -> Option<Value> {
++        let field = self.request.fields.get(idx)?;
++        let answer = self.answers.get(idx)?;
++        if !answer.answer_committed {
++            return None;
++        }
++        let McpServerElicitationFieldInput::CueQuestion { options, multi, .. } = &field.input
++        else {
++            return None;
++        };
++        let text = answer.draft.text_with_pending();
++        if !text.trim().is_empty() {
++            return Some(Value::String(text));
++        }
++        let values: Vec<_> = answer
++            .chosen
++            .iter()
++            .filter_map(|i| options.get(*i).map(|o| o.value.clone()))
++            .collect();
++        if values.is_empty() {
++            None
++        } else if *multi {
++            Some(Value::Array(values))
++        } else {
++            values.into_iter().next()
++        }
++    }
++    pub(super) fn cue_content(&self, content: &mut serde_json::Map<String, Value>) {
++        for (idx, field) in self.request.fields.iter().enumerate() {
++            let McpServerElicitationFieldInput::CueQuestion {
++                options,
++                multi,
++                custom_field,
++            } = &field.input
++            else {
++                continue;
++            };
++            let answer = &self.answers[idx];
++            content.remove(&field.id);
++            if !answer.answer_committed {
++                continue;
++            }
++            let text = answer.draft.text_with_pending();
++            let custom_active = !text.trim().is_empty();
++            if custom_active {
++                content.insert(
++                    custom_field.as_ref().unwrap_or(&field.id).clone(),
++                    Value::String(text),
++                );
++            }
++            if *multi || !custom_active {
++                let values: Vec<_> = options
++                    .iter()
++                    .enumerate()
++                    .filter(|(i, _)| answer.chosen.contains(i))
++                    .map(|(_, o)| o.value.clone())
++                    .collect();
++                if !values.is_empty() {
++                    content.insert(
++                        field.id.clone(),
++                        if *multi {
++                            Value::Array(values)
++                        } else {
++                            values[0].clone()
++                        },
++                    );
++                }
++            }
++        }
++    }
++    pub(super) fn cue_footer(&self) -> Vec<FooterTip> {
++        let mut tips = Vec::new();
++        if !self.current_options().is_empty() {
++            tips.push(FooterTip::new("tab: choices / custom answer"));
++            tips.push(FooterTip::new("space: select"));
++        }
++        tips.push(FooterTip::highlighted("enter: submit answer"));
++        if self.field_count() > 1 {
++            tips.push(FooterTip::new("ctrl+p / ctrl+n: question"));
++        }
++        tips.push(FooterTip::new("ctrl+d: decline | esc: cancel"));
++        tips
++    }
++    pub(super) fn cue_composer_area(&self, area: Rect) -> Rect {
++        let height = MIN_COMPOSER_HEIGHT.min(area.height);
++        Rect {
++            y: area.bottom().saturating_sub(height),
++            height,
++            ..area
++        }
++    }
++    pub(super) fn render_cue_input(&self, area: Rect, buf: &mut Buffer) {
++        if area.is_empty() {
++            return;
++        }
++        let composer_area = self.cue_composer_area(area);
++        let label_y = composer_area.y.saturating_sub(1).max(area.y);
++        let rows_area = Rect {
++            height: label_y.saturating_sub(area.y),
++            ..area
++        };
++        let mut state = self
++            .current_answer()
++            .map(|a| a.selection)
++            .unwrap_or_default();
++        let rows = self.option_rows();
++        state.ensure_visible(rows.len(), rows_area.height as usize);
++        if !rows.is_empty() && !rows_area.is_empty() {
++            render_rows(rows_area, buf, &rows, &state, rows.len(), "");
++        }
++        let focus = self.current_answer().is_some_and(|a| a.custom_focus);
++        let text = if self.current_options().is_empty() {
++            "Your answer"
++        } else {
++            "Other: type your own answer"
++        };
++        Paragraph::new(if focus {
++            Line::from(format!("› {text}")).cyan()
++        } else {
++            Line::from(format!("  {text}"))
++        })
++        .render(
++            Rect {
++                y: label_y,
++                height: 1,
++                ..area
++            },
++            buf,
++        );
++        self.composer.render(composer_area, buf);
++    }
++    pub(super) fn handle_cue_key(&mut self, key: KeyEvent) {
++        if key.kind == KeyEventKind::Release {
++            return;
++        }
++        if key.code == KeyCode::Esc
++            || (key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL))
++        {
++            self.dispatch_cancel();
++            self.advance_queue_or_complete();
++            return;
++        }
++        if key.code == KeyCode::Char('d') && key.modifiers.contains(KeyModifiers::CONTROL) {
++            self.app_event_tx.resolve_elicitation(
++                self.request.thread_id,
++                self.request.server_name.clone(),
++                self.request.request_id.clone(),
++                McpServerElicitationAction::Decline,
++                None,
++                None,
++            );
++            self.advance_queue_or_complete();
++            return;
++        }
++        if key.modifiers.contains(KeyModifiers::CONTROL)
++            && matches!(key.code, KeyCode::Char('p' | 'n'))
++        {
++            self.move_field(key.code == KeyCode::Char('n'));
++            return;
++        }
++        if matches!(key.code, KeyCode::Tab | KeyCode::BackTab) && !self.current_options().is_empty()
++        {
++            self.save_current_draft();
++            if let Some(a) = self.current_answer_mut() {
++                a.custom_focus = !a.custom_focus;
++            }
++            return;
++        }
++        let multi = matches!(
++            self.current_field().map(|f| &f.input),
++            Some(McpServerElicitationFieldInput::CueQuestion { multi: true, .. })
++        );
++        let custom_focus = self.current_answer().is_some_and(|a| a.custom_focus);
++        if !custom_focus && matches!(key.code, KeyCode::Up | KeyCode::Down) {
++            let len = self.options_len();
++            if let Some(a) = self.current_answer_mut() {
++                if key.code == KeyCode::Up {
++                    a.selection.move_up_wrap(len);
++                } else {
++                    a.selection.move_down_wrap(len);
++                }
++            }
++            return;
++        }
++        if !custom_focus && key.code == KeyCode::Char(' ') {
++            let idx = self.selected_option_index();
++            if !multi {
++                self.clear_current_draft();
++            }
++            if let (Some(a), Some(idx)) = (self.current_answer_mut(), idx) {
++                if a.chosen.contains(&idx) {
++                    a.chosen.retain(|i| *i != idx);
++                } else {
++                    if !multi {
++                        a.chosen.clear();
++                    }
++                    a.chosen.push(idx);
++                }
++                a.answer_committed = false;
++            }
++            return;
++        }
++        if key.code == KeyCode::Enter && key.modifiers.is_empty() {
++            if custom_focus
++                && (self.composer.is_in_paste_burst()
++                    || !self.composer.current_text_with_pending().is_empty())
++            {
++                let (result, _) = self.composer.handle_key_event(key);
++                self.handle_composer_input_result(result);
++                return;
++            }
++            if !custom_focus && !multi {
++                self.clear_current_draft();
++            }
++            self.save_current_draft();
++            if let Some(a) = self.current_answer_mut() {
++                // Enter on the choices is an explicit selection. Custom focus never falls back.
++                if !custom_focus && !multi {
++                    a.chosen.clear();
++                    if let Some(idx) = a.selection.selected_idx {
++                        a.chosen.push(idx);
++                    }
++                }
++                a.answer_committed =
++                    !a.chosen.is_empty() || !a.draft.text_with_pending().trim().is_empty();
++            }
++            if !self.is_current_field_answered() {
++                self.validation_error = Some("Choose an option or type your answer.".to_owned());
++                return;
++            }
++            self.validation_error = None;
++            self.go_next_or_submit();
++            return;
++        }
++        if let Some(a) = self.current_answer_mut() {
++            a.custom_focus = true;
++            if !multi {
++                a.chosen.clear();
++            }
++        }
++        let before = self.capture_composer_draft();
++        let (result, _) = self.composer.handle_key_event(key);
++        let changed = before != self.capture_composer_draft();
++        if changed {
++            self.validation_error = None;
++            if let Some(a) = self.current_answer_mut() {
++                if !multi {
++                    a.chosen.clear();
++                }
++                a.answer_committed = false;
++            }
++            self.save_current_draft();
++        }
++        // Alternate composer submit bindings retain the same result contract.
++        self.handle_composer_input_result(result);
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use crate::app_event::AppEvent;
++    use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
++    fn fixture(
++        multi: bool,
++        no_options: bool,
++    ) -> (McpServerElicitationOverlay, UnboundedReceiver<AppEvent>) {
++        let (tx, rx) = unbounded_channel();
++        let mut properties = serde_json::json!({"q0": {"type":"string","title":"Destination","description":"Where should this run?"}});
++        let mut row = serde_json::json!({"id":"q0","multiSelect":multi});
++        if !no_options {
++            row["customField"] = "q0_other".into();
++            properties["q0_other"] = serde_json::json!({"type":"string","title":"Other"});
++            if multi {
++                properties["q0"]["type"] = "array".into();
++                properties["q0"]["items"] =
++                    serde_json::json!({"type":"string","enum":["Local","Cloud"]});
++            } else {
++                properties["q0"]["enum"] = serde_json::json!(["Local", "Cloud"]);
++            }
++        }
++        let request = McpServerElicitationFormRequest::from_parts(
++            ThreadId::default(),
++            "questions".to_owned(),
++            AppServerRequestId::String("form1".to_owned()),
++            Some(&serde_json::json!({"io.cue/questions":{"version":1,"questions":[row]}})),
++            "Choose a destination".to_owned(),
++            serde_json::json!({"type":"object","properties":properties}),
++        )
++        .unwrap();
++        (
++            McpServerElicitationOverlay::new(request, AppEventSender::new(tx), true, false, true),
++            rx,
++        )
++    }
++    fn key(overlay: &mut McpServerElicitationOverlay, code: KeyCode) {
++        overlay.handle_key_event(KeyEvent::new(code, KeyModifiers::NONE));
++    }
++    fn typed(overlay: &mut McpServerElicitationOverlay, text: &str) {
++        for ch in text.chars() {
++            key(overlay, KeyCode::Char(ch));
++        }
++    }
++    fn result(rx: &mut UnboundedReceiver<AppEvent>) -> (McpServerElicitationAction, Option<Value>) {
++        while let Ok(event) = rx.try_recv() {
++            if let AppEvent::SubmitThreadOp {
++                op:
++                    Op::ResolveElicitation {
++                        decision,
++                        content,
++                        meta,
++                        ..
++                    },
++                ..
++            } = event
++            {
++                if decision == McpServerElicitationAction::Accept {
++                    assert_eq!(
++                        meta,
++                        Some(serde_json::json!({"io.cue/questions":{"version":1}}))
++                    );
++                }
++                return (decision, content);
++            }
++        }
++        panic!("no elicitation response")
++    }
++    fn screen(overlay: &McpServerElicitationOverlay, width: u16, height: u16) -> String {
++        let area = Rect::new(0, 0, width, height);
++        let mut buf = Buffer::empty(area);
++        overlay.render(area, &mut buf);
++        (0..height)
++            .map(|y| {
++                (0..width)
++                    .map(|x| buf[(x, y)].symbol())
++                    .collect::<String>()
++                    .trim_end()
++                    .to_owned()
++            })
++            .collect::<Vec<_>>()
++            .join("\n")
++    }
++    #[test]
++    fn cue_single_custom_is_alternative_and_visible() {
++        let (mut overlay, mut rx) = fixture(false, false);
++        let initial = screen(&overlay, 80, 16);
++        assert!(
++            initial.contains("Local")
++                && initial.contains("Cloud")
++                && initial.contains("Other: type your own answer")
++        );
++        insta::assert_snapshot!("cue_question_single", initial);
++        key(&mut overlay, KeyCode::Char(' '));
++        typed(&mut overlay, "On premises");
++        assert!(overlay.answers[0].chosen.is_empty());
++        let edited = screen(&overlay, 80, 16);
++        assert!(edited.contains("› Other:") && edited.contains("On premises"));
++        insta::assert_snapshot!("cue_question_single_custom", edited);
++        key(&mut overlay, KeyCode::Enter);
++        assert_eq!(
++            result(&mut rx),
++            (
++                McpServerElicitationAction::Accept,
++                Some(serde_json::json!({"q0_other":"On premises"}))
++            )
++        );
++    }
++    #[test]
++    fn cue_single_deliberate_selection() {
++        let (mut overlay, mut rx) = fixture(false, false);
++        assert!(!overlay.done);
++        key(&mut overlay, KeyCode::Down);
++        key(&mut overlay, KeyCode::Char(' '));
++        key(&mut overlay, KeyCode::Enter);
++        assert_eq!(result(&mut rx).1, Some(serde_json::json!({"q0":"Cloud"})));
++    }
++    #[test]
++    fn cue_multi_choices_and_custom_share_question() {
++        let (mut overlay, mut rx) = fixture(true, false);
++        key(&mut overlay, KeyCode::Char(' '));
++        key(&mut overlay, KeyCode::Down);
++        key(&mut overlay, KeyCode::Char(' '));
++        typed(&mut overlay, "Edge");
++        let rendered = screen(&overlay, 80, 16);
++        assert!(
++            rendered.contains("[x] Local")
++                && rendered.contains("[x] Cloud")
++                && rendered.contains("Edge")
++        );
++        insta::assert_snapshot!("cue_question_multi_custom", rendered);
++        key(&mut overlay, KeyCode::Enter);
++        assert_eq!(
++            result(&mut rx).1,
++            Some(serde_json::json!({"q0":["Local","Cloud"],"q0_other":"Edge"}))
++        );
++    }
++    #[test]
++    fn cue_text_only_and_narrow_render() {
++        let (mut overlay, mut rx) = fixture(false, true);
++        typed(&mut overlay, "A custom destination");
++        insta::assert_snapshot!("cue_question_text_narrow", screen(&overlay, 40, 14));
++        key(&mut overlay, KeyCode::Enter);
++        assert_eq!(
++            result(&mut rx).1,
++            Some(serde_json::json!({"q0":"A custom destination"}))
++        );
++    }
++    #[test]
++    fn cue_cancel_decline_never_submit_drafts() {
++        for (code, modifiers, expected) in [
++            (
++                KeyCode::Esc,
++                KeyModifiers::NONE,
++                McpServerElicitationAction::Cancel,
++            ),
++            (
++                KeyCode::Char('d'),
++                KeyModifiers::CONTROL,
++                McpServerElicitationAction::Decline,
++            ),
++        ] {
++            let (mut overlay, mut rx) = fixture(true, false);
++            key(&mut overlay, KeyCode::Char(' '));
++            typed(&mut overlay, "Unsubmitted");
++            overlay.handle_key_event(KeyEvent::new(code, modifiers));
++            assert_eq!(result(&mut rx), (expected, None));
++        }
++    }
++    #[test]
++    fn cue_blank_custom_enter_never_selects_highlight() {
++        let (mut overlay, _rx) = fixture(false, false);
++        key(&mut overlay, KeyCode::Tab);
++        key(&mut overlay, KeyCode::Enter);
++        assert!(!overlay.done);
++        assert!(overlay.validation_error.is_some());
++    }
++    #[test]
++    fn cue_enter_on_choice_is_deliberate_acceptance() {
++        let (mut overlay, mut rx) = fixture(false, false);
++        key(&mut overlay, KeyCode::Enter);
++        assert_eq!(result(&mut rx).1, Some(serde_json::json!({"q0":"Local"})));
++    }
++    #[test]
++    fn cue_paste_replaces_single_selection() {
++        let (mut overlay, mut rx) = fixture(false, false);
++        key(&mut overlay, KeyCode::Char(' '));
++        assert!(overlay.handle_paste("Pasted destination".to_owned()));
++        key(&mut overlay, KeyCode::Enter);
++        assert_eq!(
++            result(&mut rx).1,
++            Some(serde_json::json!({"q0_other":"Pasted destination"}))
++        );
++    }
++    #[test]
++    fn cue_long_options_scroll_but_custom_stays_visible() {
++        let (mut overlay, _rx) = fixture(true, false);
++        let McpServerElicitationFieldInput::CueQuestion { options, .. } =
++            &mut overlay.request.fields[0].input
++        else {
++            panic!("cue question");
++        };
++        *options = (0..20).map(|i| McpServerElicitationOption { label: format!("Destination {i}: a long descriptive label that wraps across the available terminal width"), description: Some("An explanation of the selected destination and its operational constraints".to_owned()), value: Value::String(i.to_string()) }).collect();
++        let mut next = overlay.request.fields[0].clone();
++        next.id = "q1".to_owned();
++        overlay.request.fields.push(next);
++        overlay.reset_for_request();
++        overlay.restore_current_draft();
++        for _ in 0..19 {
++            key(&mut overlay, KeyCode::Down);
++        }
++        let rendered = screen(&overlay, 80, 20);
++        assert!(rendered.contains("Question 1/2"));
++        assert!(rendered.contains("Other: type your own answer"));
++        assert!(rendered.contains("Destination 19"));
++        insta::assert_snapshot!("cue_question_long_options", rendered);
++    }
++    #[test]
++    fn cue_legacy_layout_is_negative_control_for_inline_contract() {
++        let (tx, _rx) = unbounded_channel();
++        let request = McpServerElicitationFormRequest::from_parts(ThreadId::default(), "legacy".to_owned(), AppServerRequestId::String("legacy".to_owned()), None, "Choose a destination".to_owned(), serde_json::json!({"type":"object","properties":{"q0":{"type":"string","enum":["Local","Cloud"]},"q0_other":{"type":"string"}}})).unwrap();
++        let overlay =
++            McpServerElicitationOverlay::new(request, AppEventSender::new(tx), true, false, true);
++        let legacy = screen(&overlay, 80, 16);
++        insta::assert_snapshot!("cue_question_legacy_negative_control", legacy);
++        // The same-screen requirement must reject the stock separate-field layout.
++        assert!(
++            std::panic::catch_unwind(|| {
++                assert!(legacy.contains("Local") && legacy.contains("Other: type your own answer"));
++            })
++            .is_err()
++        );
++        let (native, _) = fixture(false, false);
++        let inline = screen(&native, 80, 16);
++        assert!(inline.contains("Local") && inline.contains("Other: type your own answer"));
++    }
++    #[test]
++    fn cue_return_to_choices_replaces_custom_answer() {
++        let (mut overlay, mut rx) = fixture(false, false);
++        typed(&mut overlay, "Custom draft");
++        key(&mut overlay, KeyCode::Tab);
++        key(&mut overlay, KeyCode::Down);
++        key(&mut overlay, KeyCode::Enter);
++        assert_eq!(result(&mut rx).1, Some(serde_json::json!({"q0":"Cloud"})));
++    }
++    #[test]
++    fn cue_malformed_hint_does_not_drop_fields() {
++        let schema = serde_json::json!({"type":"object","properties":{"q0":{"type":"string"},"unmarked":{"type":"string"}}});
++        let meta = serde_json::json!({"io.cue/questions":{"version":1,"questions":[{"id":"q0","multiSelect":false}]}});
++        assert!(parse(&schema, &meta).is_none());
++    }
++}
++
++#[cfg(test)]
++mod regression_tests {
++    use super::*;
++    #[test]
++    fn cue_unknown_hint_preserves_ordinary_text_form() {
++        let schema = serde_json::json!({"type":"object","properties":{"name":{"type":"string"}}});
++        let request = McpServerElicitationFormRequest::from_parts(
++            ThreadId::default(),
++            "ordinary".to_owned(),
++            AppServerRequestId::String("1".to_owned()),
++            Some(&serde_json::json!({"io.cue/questions":{"version":99,"questions":[]}})),
++            "Name".to_owned(),
++            schema,
++        )
++        .unwrap();
++        assert!(matches!(
++            request.fields[0].input,
++            McpServerElicitationFieldInput::Text { .. }
++        ));
++    }
++    #[test]
++    fn cue_metadata_does_not_change_approval_choices() {
++        let request = McpServerElicitationFormRequest::from_parts(ThreadId::default(), "approval".to_owned(), AppServerRequestId::String("1".to_owned()), Some(&serde_json::json!({APPROVAL_META_KIND_KEY:APPROVAL_META_KIND_MCP_TOOL_CALL,"io.cue/questions":{"version":1,"questions":[]}})), "Allow?".to_owned(), serde_json::json!({"type":"object","properties":{}})).unwrap();
++        assert_eq!(
++            request.response_mode,
++            McpServerElicitationResponseMode::ApprovalAction
++        );
++        assert!(matches!(
++            request.fields[0].input,
++            McpServerElicitationFieldInput::Select { .. }
++        ));
++    }
++}
+diff --git a/codex-rs/tui/src/bottom_pane/mcp_server_elicitation/snapshots/codex_tui__bottom_pane__mcp_server_elicitation__cue_questions__tests__cue_question_legacy_negative_control.snap b/codex-rs/tui/src/bottom_pane/mcp_server_elicitation/snapshots/codex_tui__bottom_pane__mcp_server_elicitation__cue_questions__tests__cue_question_legacy_negative_control.snap
+new file mode 100644
+--- /dev/null
++++ b/codex-rs/tui/src/bottom_pane/mcp_server_elicitation/snapshots/codex_tui__bottom_pane__mcp_server_elicitation__cue_questions__tests__cue_question_legacy_negative_control.snap
+@@ -0,0 +1,19 @@
++---
++source: tui/src/bottom_pane/mcp_server_elicitation/cue_questions.rs
++expression: legacy
++---
++
++  Field 1/2
++  Choose a destination
++
++  q0
++  › 1. Local
++    2. Cloud
++
++
++
++
++
++
++
++  enter to submit answer | ←/→ to navigate fields | esc to cancel
+diff --git a/codex-rs/tui/src/bottom_pane/mcp_server_elicitation/snapshots/codex_tui__bottom_pane__mcp_server_elicitation__cue_questions__tests__cue_question_long_options.snap b/codex-rs/tui/src/bottom_pane/mcp_server_elicitation/snapshots/codex_tui__bottom_pane__mcp_server_elicitation__cue_questions__tests__cue_question_long_options.snap
+new file mode 100644
+--- /dev/null
++++ b/codex-rs/tui/src/bottom_pane/mcp_server_elicitation/snapshots/codex_tui__bottom_pane__mcp_server_elicitation__cue_questions__tests__cue_question_long_options.snap
+@@ -0,0 +1,23 @@
++---
++source: tui/src/bottom_pane/mcp_server_elicitation/cue_questions.rs
++expression: rendered
++---
++
++  Question 1/2 (2 required unanswered)
++  Choose a destination
++
++  Destination
++  Where should this run?
++  › 20. [ ] Destination 19: a long descriptive label   An explanation of the
++            that wraps across the available terminal   selected destination
++            width                                      and its operational
++                                                       constraints
++
++
++
++    Other: type your own answer
++
++  › Type your answer
++
++  tab: choices / custom answer | space: select | enter: submit answer
++  ctrl+p / ctrl+n: question | ctrl+d: decline | esc: cancel
+diff --git a/codex-rs/tui/src/bottom_pane/mcp_server_elicitation/snapshots/codex_tui__bottom_pane__mcp_server_elicitation__cue_questions__tests__cue_question_multi_custom.snap b/codex-rs/tui/src/bottom_pane/mcp_server_elicitation/snapshots/codex_tui__bottom_pane__mcp_server_elicitation__cue_questions__tests__cue_question_multi_custom.snap
+new file mode 100644
+--- /dev/null
++++ b/codex-rs/tui/src/bottom_pane/mcp_server_elicitation/snapshots/codex_tui__bottom_pane__mcp_server_elicitation__cue_questions__tests__cue_question_multi_custom.snap
+@@ -0,0 +1,19 @@
++---
++source: tui/src/bottom_pane/mcp_server_elicitation/cue_questions.rs
++expression: rendered
++---
++
++  Question 1/1 (1 required unanswered)
++  Choose a destination
++
++  Destination
++  Where should this run?
++    1. [x] Local
++    2. [x] Cloud
++
++  › Other: type your own answer
++
++  › Edge
++
++  tab: choices / custom answer | space: select | enter: submit answer
++  ctrl+d: decline | esc: cancel
+diff --git a/codex-rs/tui/src/bottom_pane/mcp_server_elicitation/snapshots/codex_tui__bottom_pane__mcp_server_elicitation__cue_questions__tests__cue_question_single.snap b/codex-rs/tui/src/bottom_pane/mcp_server_elicitation/snapshots/codex_tui__bottom_pane__mcp_server_elicitation__cue_questions__tests__cue_question_single.snap
+new file mode 100644
+--- /dev/null
++++ b/codex-rs/tui/src/bottom_pane/mcp_server_elicitation/snapshots/codex_tui__bottom_pane__mcp_server_elicitation__cue_questions__tests__cue_question_single.snap
+@@ -0,0 +1,19 @@
++---
++source: tui/src/bottom_pane/mcp_server_elicitation/cue_questions.rs
++expression: initial
++---
++
++  Question 1/1 (1 required unanswered)
++  Choose a destination
++
++  Destination
++  Where should this run?
++  › 1. [ ] Local
++    2. [ ] Cloud
++
++    Other: type your own answer
++
++  › Type your answer
++
++  tab: choices / custom answer | space: select | enter: submit answer
++  ctrl+d: decline | esc: cancel
+diff --git a/codex-rs/tui/src/bottom_pane/mcp_server_elicitation/snapshots/codex_tui__bottom_pane__mcp_server_elicitation__cue_questions__tests__cue_question_single_custom.snap b/codex-rs/tui/src/bottom_pane/mcp_server_elicitation/snapshots/codex_tui__bottom_pane__mcp_server_elicitation__cue_questions__tests__cue_question_single_custom.snap
+new file mode 100644
+--- /dev/null
++++ b/codex-rs/tui/src/bottom_pane/mcp_server_elicitation/snapshots/codex_tui__bottom_pane__mcp_server_elicitation__cue_questions__tests__cue_question_single_custom.snap
+@@ -0,0 +1,19 @@
++---
++source: tui/src/bottom_pane/mcp_server_elicitation/cue_questions.rs
++expression: edited
++---
++
++  Question 1/1 (1 required unanswered)
++  Choose a destination
++
++  Destination
++  Where should this run?
++    1. [ ] Local
++    2. [ ] Cloud
++
++  › Other: type your own answer
++
++  › On premises
++
++  tab: choices / custom answer | space: select | enter: submit answer
++  ctrl+d: decline | esc: cancel
+diff --git a/codex-rs/tui/src/bottom_pane/mcp_server_elicitation/snapshots/codex_tui__bottom_pane__mcp_server_elicitation__cue_questions__tests__cue_question_text_narrow.snap b/codex-rs/tui/src/bottom_pane/mcp_server_elicitation/snapshots/codex_tui__bottom_pane__mcp_server_elicitation__cue_questions__tests__cue_question_text_narrow.snap
+new file mode 100644
+--- /dev/null
++++ b/codex-rs/tui/src/bottom_pane/mcp_server_elicitation/snapshots/codex_tui__bottom_pane__mcp_server_elicitation__cue_questions__tests__cue_question_text_narrow.snap
+@@ -0,0 +1,17 @@
++---
++source: tui/src/bottom_pane/mcp_server_elicitation/cue_questions.rs
++expression: "screen(&overlay, 40, 14)"
++---
++
++  Question 1/1 (1 required unanswered)
++  Choose a destination
++
++  Destination
++  Where should this run?
++
++  › Your answer
++
++  › A custom destination
++
++  enter: submit answer
++  ctrl+d: decline | esc: cancel

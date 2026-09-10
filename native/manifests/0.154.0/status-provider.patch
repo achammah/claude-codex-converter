@@ -1,0 +1,1525 @@
+--- a/codex-rs/config/src/types.rs
++++ b/codex-rs/config/src/types.rs
+@@ -716,6 +716,56 @@
+     pub shown_count: HashMap<String, u32>,
+ }
+ 
++const fn default_status_provider_refresh_interval_ms() -> u64 {
++    5_000
++}
++
++const fn default_status_provider_timeout_ms() -> u64 {
++    2_000
++}
++
++const fn default_status_provider_max_lines() -> usize {
++    2
++}
++
++/// ANSI handling for a configured TUI status provider.
++#[derive(Serialize, Deserialize, Debug, Clone, Copy, PartialEq, Eq, Default, JsonSchema)]
++#[serde(rename_all = "kebab-case")]
++pub enum TuiStatusProviderAnsi {
++    /// Remove all terminal control sequences from provider output.
++    #[default]
++    Strip,
++    /// Preserve only Select Graphic Rendition (SGR) styling.
++    Sgr,
++}
++
++/// A bounded command whose output is rendered above the native TUI footer.
++#[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq, JsonSchema)]
++#[schemars(deny_unknown_fields)]
++pub struct TuiStatusProviderConfig {
++    /// Program and arguments to execute directly, without shell interpolation.
++    pub command: Vec<String>,
++
++    /// Delay between completed refreshes in milliseconds.
++    #[serde(default = "default_status_provider_refresh_interval_ms")]
++    #[schemars(range(min = 250, max = 60_000))]
++    pub refresh_interval_ms: u64,
++
++    /// Maximum wall-clock duration of one refresh in milliseconds.
++    #[serde(default = "default_status_provider_timeout_ms")]
++    #[schemars(range(min = 50, max = 60_000))]
++    pub timeout_ms: u64,
++
++    /// Maximum number of provider rows rendered above the native footer.
++    #[serde(default = "default_status_provider_max_lines")]
++    #[schemars(range(min = 1, max = 4))]
++    pub max_lines: usize,
++
++    /// Terminal styling accepted from provider output.
++    #[serde(default)]
++    pub ansi: TuiStatusProviderAnsi,
++}
++
+ /// Fallback resize-reflow row cap when Codex cannot identify a terminal-specific scrollback size.
+ pub const DEFAULT_TERMINAL_RESIZE_REFLOW_FALLBACK_MAX_ROWS: usize = 1_000;
+ 
+@@ -780,6 +830,12 @@
+     /// When unset, the TUI defaults to: `model-with-reasoning`, `current-dir`, and `thread-name`.
+     #[serde(default)]
+     pub status_line: Option<Vec<String>>,
++
++    /// Optional asynchronous command status rendered above the native footer.
++    ///
++    /// Project-local values are loaded only through Codex's trusted project-config layers.
++    #[serde(default)]
++    pub status_provider: Option<TuiStatusProviderConfig>,
+ 
+     /// Color status line items with colors derived from the active syntax theme.
+     /// Defaults to `true`.
+--- a/codex-rs/core/config.schema.json
++++ b/codex-rs/core/config.schema.json
+@@ -4136,6 +4136,15 @@
+           "default": true,
+           "description": "Color status line items with colors derived from the active syntax theme. Defaults to `true`.",
+           "type": "boolean"
++        },
++        "status_provider": {
++          "allOf": [
++            {
++              "$ref": "#/definitions/TuiStatusProviderConfig"
++            }
++          ],
++          "default": null,
++          "description": "Optional asynchronous command status rendered above the native footer.\n\nProject-local values are loaded only through Codex's trusted project-config layers."
+         },
+         "terminal_resize_reflow_max_rows": {
+           "default": null,
+@@ -5121,6 +5130,75 @@
+         }
+       ]
+     },
++    "TuiStatusProviderAnsi": {
++      "description": "ANSI handling for a configured TUI status provider.",
++      "oneOf": [
++        {
++          "description": "Remove all terminal control sequences from provider output.",
++          "enum": [
++            "strip"
++          ],
++          "type": "string"
++        },
++        {
++          "description": "Preserve only Select Graphic Rendition (SGR) styling.",
++          "enum": [
++            "sgr"
++          ],
++          "type": "string"
++        }
++      ]
++    },
++    "TuiStatusProviderConfig": {
++      "additionalProperties": false,
++      "description": "A bounded command whose output is rendered above the native TUI footer.",
++      "properties": {
++        "ansi": {
++          "allOf": [
++            {
++              "$ref": "#/definitions/TuiStatusProviderAnsi"
++            }
++          ],
++          "default": "strip",
++          "description": "Terminal styling accepted from provider output."
++        },
++        "command": {
++          "description": "Program and arguments to execute directly, without shell interpolation.",
++          "items": {
++            "type": "string"
++          },
++          "type": "array"
++        },
++        "max_lines": {
++          "default": 2,
++          "description": "Maximum number of provider rows rendered above the native footer.",
++          "format": "uint",
++          "maximum": 4.0,
++          "minimum": 1.0,
++          "type": "integer"
++        },
++        "refresh_interval_ms": {
++          "default": 5000,
++          "description": "Delay between completed refreshes in milliseconds.",
++          "format": "uint64",
++          "maximum": 60000.0,
++          "minimum": 250.0,
++          "type": "integer"
++        },
++        "timeout_ms": {
++          "default": 2000,
++          "description": "Maximum wall-clock duration of one refresh in milliseconds.",
++          "format": "uint64",
++          "maximum": 60000.0,
++          "minimum": 50.0,
++          "type": "integer"
++        }
++      },
++      "required": [
++        "command"
++      ],
++      "type": "object"
++    },
+     "TuiVimNormalKeymap": {
+       "additionalProperties": false,
+       "description": "Vim normal-mode keybindings for modal editing inside text areas.\n\nActions that use uppercase letters (like `A` for append-line-end) should be specified as `shift-a` in config; the runtime matcher handles cross-terminal shift-reporting differences automatically.",
+--- a/codex-rs/core/src/config/config_tests.rs
++++ b/codex-rs/core/src/config/config_tests.rs
+@@ -68,6 +68,8 @@
+ use codex_config::types::TuiKeymap;
+ use codex_config::types::TuiNotificationSettings;
+ use codex_config::types::TuiPetAnchor;
++use codex_config::types::TuiStatusProviderAnsi;
++use codex_config::types::TuiStatusProviderConfig;
+ use codex_config::types::WindowsSandboxModeToml;
+ use codex_config::types::WindowsToml;
+ use codex_exec_server::LOCAL_FS;
+@@ -1265,6 +1267,7 @@
+             raw_output_mode: false,
+             alternate_screen: AltScreenMode::default(),
+             status_line: None,
++            status_provider: None,
+             status_line_use_colors: true,
+             terminal_title: None,
+             theme: None,
+@@ -1282,6 +1285,62 @@
+             terminal_resize_reflow_max_rows: None,
+         }
+     );
++}
++
++#[test]
++fn config_toml_deserializes_tui_status_provider() {
++    let cfg: ConfigToml = toml::from_str(
++        r#"
++[tui.status_provider]
++command = ["python3", ".cue/scripts/status_line.py", "--native-stdin"]
++refresh_interval_ms = 7500
++timeout_ms = 45000
++max_lines = 4
++ansi = "sgr"
++"#,
++    )
++    .expect("status provider config should deserialize");
++    let provider = cfg
++        .tui
++        .expect("tui config should exist")
++        .status_provider
++        .expect("status provider should exist");
++
++    assert_eq!(
++        provider,
++        TuiStatusProviderConfig {
++            command: vec![
++                "python3".to_string(),
++                ".cue/scripts/status_line.py".to_string(),
++                "--native-stdin".to_string(),
++            ],
++            refresh_interval_ms: 7_500,
++            timeout_ms: 45_000,
++            max_lines: 4,
++            ansi: TuiStatusProviderAnsi::Sgr,
++        }
++    );
++}
++
++#[test]
++fn config_toml_applies_tui_status_provider_defaults() {
++    let cfg: ConfigToml = toml::from_str(
++        r#"
++[tui.status_provider]
++command = ["status-program"]
++"#,
++    )
++    .expect("status provider defaults should deserialize");
++    let provider = cfg
++        .tui
++        .expect("tui config should exist")
++        .status_provider
++        .expect("status provider should exist");
++
++    assert_eq!(provider.refresh_interval_ms, 5_000);
++    assert_eq!(provider.timeout_ms, 2_000);
++    assert_eq!(provider.max_lines, 2);
++    assert_eq!(provider.ansi, TuiStatusProviderAnsi::Strip);
+ }
+ 
+ #[test]
+@@ -4280,6 +4339,7 @@
+             raw_output_mode: false,
+             alternate_screen: AltScreenMode::Auto,
+             status_line: None,
++            status_provider: None,
+             status_line_use_colors: true,
+             terminal_title: None,
+             theme: None,
+@@ -6495,6 +6555,49 @@
+ }
+ 
+ #[tokio::test]
++async fn status_provider_only_loads_from_trusted_project_config() -> std::io::Result<()> {
++    for (trust_level, should_load) in [("trusted", true), ("untrusted", false)] {
++        let codex_home = TempDir::new()?;
++        let workspace = TempDir::new()?;
++        let workspace_key = workspace.path().to_string_lossy().replace('\\', "\\\\");
++        std::fs::write(
++            codex_home.path().join(CONFIG_TOML_FILE),
++            format!(
++                r#"
++[projects."{workspace_key}"]
++trust_level = "{trust_level}"
++"#,
++            ),
++        )?;
++        let project_config_dir = workspace.path().join(".codex");
++        std::fs::create_dir_all(&project_config_dir)?;
++        std::fs::write(
++            project_config_dir.join(CONFIG_TOML_FILE),
++            r#"
++[tui.status_provider]
++command = ["project-status"]
++"#,
++        )?;
++
++        let config = ConfigBuilder::without_managed_config_for_tests()
++            .codex_home(codex_home.path().to_path_buf())
++            .harness_overrides(ConfigOverrides {
++                cwd: Some(workspace.path().to_path_buf()),
++                ..Default::default()
++            })
++            .build()
++            .await?;
++
++        assert_eq!(
++            config.tui_status_provider.is_some(),
++            should_load,
++            "unexpected status provider load result for {trust_level} project"
++        );
++    }
++    Ok(())
++}
++
++#[tokio::test]
+ async fn feature_table_overrides_legacy_flags() -> std::io::Result<()> {
+     let codex_home = TempDir::new()?;
+     let mut entries = BTreeMap::new();
+--- a/codex-rs/core/src/config/mod.rs
++++ b/codex-rs/core/src/config/mod.rs
+@@ -54,6 +54,7 @@
+ use codex_config::types::TuiKeymap;
+ use codex_config::types::TuiNotificationSettings;
+ use codex_config::types::TuiPetAnchor;
++use codex_config::types::TuiStatusProviderConfig;
+ use codex_config::types::UriBasedFileOpener;
+ use codex_config::types::WindowsSandboxModeToml;
+ use codex_core_plugins::PluginLoadOutcome;
+@@ -774,6 +775,9 @@
+     ///
+     /// When unset, the TUI defaults to: `model-with-reasoning` and `current-dir`.
+     pub tui_status_line: Option<Vec<String>>,
++
++    /// Optional asynchronous command status rendered above the native TUI footer.
++    pub tui_status_provider: Option<TuiStatusProviderConfig>,
+ 
+     /// Whether to color status line items with colors from the active syntax theme.
+     pub tui_status_line_use_colors: bool,
+@@ -4377,6 +4381,10 @@
+                 .map(|t| t.alternate_screen)
+                 .unwrap_or_default(),
+             tui_status_line: cfg.tui.as_ref().and_then(|t| t.status_line.clone()),
++            tui_status_provider: cfg
++                .tui
++                .as_ref()
++                .and_then(|t| t.status_provider.clone()),
+             tui_status_line_use_colors: cfg
+                 .tui
+                 .as_ref()
+--- a/codex-rs/tui/Cargo.toml
++++ b/codex-rs/tui/Cargo.toml
+@@ -69,6 +69,7 @@
+ codex-utils-oss = { workspace = true }
+ codex-utils-path = { workspace = true }
+ codex-utils-path-uri = { workspace = true }
++codex-utils-pty = { workspace = true }
+ codex-utils-plugins = { workspace = true }
+ codex-utils-sandbox-summary = { workspace = true }
+ codex-utils-sleep-inhibitor = { workspace = true }
+@@ -106,6 +107,7 @@
+ thiserror = { workspace = true }
+ tokio = { workspace = true, features = [
+     "io-std",
++    "io-util",
+     "macros",
+     "process",
+     "rt-multi-thread",
+--- a/codex-rs/tui/src/app/event_dispatch.rs
++++ b/codex-rs/tui/src/app/event_dispatch.rs
+@@ -3015,6 +3015,19 @@
+                     tui.frame_requester().schedule_frame();
+                 }
+             }
++            AppEvent::StatusProviderFinished {
++                thread_id,
++                request_id,
++                result,
++            } => {
++                if self.chat_widget.finish_status_provider_refresh(
++                    thread_id,
++                    request_id,
++                    result,
++                ) {
++                    tui.frame_requester().schedule_frame();
++                }
++            }
+             AppEvent::StatusLineSetupCancelled => {
+                 self.chat_widget.cancel_status_line_setup();
+             }
+--- a/codex-rs/tui/src/app_event.rs
++++ b/codex-rs/tui/src/app_event.rs
+@@ -1398,6 +1398,12 @@
+         request_id: u64,
+         result: Result<crate::workspace_messages::WorkspaceHeadlineFetchResult, String>,
+     },
++    /// Completed refresh of the configured asynchronous status provider.
++    StatusProviderFinished {
++        thread_id: codex_protocol::ThreadId,
++        request_id: u64,
++        result: crate::status_provider::StatusProviderRunResult,
++    },
+     /// Apply a user-confirmed status-line item ordering/selection.
+     StatusLineSetup {
+         items: Vec<StatusLineItem>,
+--- a/codex-rs/tui/src/bottom_pane/chat_composer.rs
++++ b/codex-rs/tui/src/bottom_pane/chat_composer.rs
+@@ -666,6 +666,7 @@
+                 goal_status_indicator: None,
+                 ide_context_active: false,
+                 status_line_value: None,
++                status_provider_lines: Vec::new(),
+                 status_line_hyperlink_url: None,
+                 status_line_enabled: false,
+                 side_conversation_context_label: None,
+@@ -1034,7 +1035,10 @@
+             .custom_footer_height()
+             .unwrap_or_else(|| footer_height(&footer_props));
+         let footer_spacing = Self::footer_spacing(footer_hint_height);
+-        let footer_total_height = footer_hint_height + footer_spacing;
++        let footer_total_height = self
++            .status_provider_height()
++            .saturating_add(footer_hint_height)
++            .saturating_add(footer_spacing);
+         let popup_constraint = match &self.popups.active {
+             ActivePopup::Command(popup) => {
+                 Constraint::Max(popup.calculate_required_height(area.width))
+@@ -1082,6 +1086,14 @@
+         } else {
+             FOOTER_SPACING_HEIGHT
+         }
++    }
++
++    fn status_provider_height(&self) -> u16 {
++        self.footer
++            .status_provider_lines
++            .len()
++            .try_into()
++            .unwrap_or(u16::MAX)
+     }
+ 
+     pub fn cursor_pos(&self, area: Rect) -> Option<(u16, u16)> {
+@@ -4445,6 +4457,14 @@
+         true
+     }
+ 
++    pub(crate) fn set_status_provider_lines(&mut self, lines: Vec<Line<'static>>) -> bool {
++        if self.footer.status_provider_lines == lines {
++            return false;
++        }
++        self.footer.status_provider_lines = lines;
++        true
++    }
++
+     pub(crate) fn set_status_line_hyperlink(&mut self, url: Option<String>) -> bool {
+         if self.footer.status_line_hyperlink_url == url {
+             return false;
+@@ -4641,7 +4661,10 @@
+             .custom_footer_height()
+             .unwrap_or_else(|| footer_height(&footer_props));
+         let footer_spacing = Self::footer_spacing(footer_hint_height);
+-        let footer_total_height = footer_hint_height + footer_spacing;
++        let footer_total_height = self
++            .status_provider_height()
++            .saturating_add(footer_hint_height)
++            .saturating_add(footer_spacing);
+         const COLS_WITH_MARGIN: u16 = LIVE_PREFIX_COLS + 1;
+         let inner_width =
+             width.saturating_sub(COLS_WITH_MARGIN.saturating_add(textarea_right_reserve));
+@@ -4719,15 +4742,29 @@
+                 let footer_hint_height =
+                     custom_height.unwrap_or_else(|| footer_height(&footer_props));
+                 let footer_spacing = Self::footer_spacing(footer_hint_height);
++                let [status_provider_rect, native_footer_rect] = Layout::vertical([
++                    Constraint::Length(self.status_provider_height()),
++                    Constraint::Length(footer_hint_height.saturating_add(footer_spacing)),
++                ])
++                .areas(popup_rect);
++                for (index, line) in self.footer.status_provider_lines.iter().enumerate() {
++                    let provider_line_rect = Rect {
++                        x: status_provider_rect.x,
++                        y: status_provider_rect.y.saturating_add(index as u16),
++                        width: status_provider_rect.width,
++                        height: 1,
++                    };
++                    render_footer_line(provider_line_rect, buf, line.clone());
++                }
+                 let hint_rect = if footer_spacing > 0 && footer_hint_height > 0 {
+                     let [_, hint_rect] = Layout::vertical([
+                         Constraint::Length(footer_spacing),
+                         Constraint::Length(footer_hint_height),
+                     ])
+-                    .areas(popup_rect);
++                    .areas(native_footer_rect);
+                     hint_rect
+                 } else {
+-                    popup_rect
++                    native_footer_rect
+                 };
+                 if let Some(input) = self.draft.textarea.vim_query() {
+                     input.render(inset_footer_hint_area(hint_rect), buf);
+--- a/codex-rs/tui/src/bottom_pane/chat_composer/footer_state.rs
++++ b/codex-rs/tui/src/bottom_pane/chat_composer/footer_state.rs
+@@ -40,6 +40,7 @@
+     pub(super) goal_status_indicator: Option<GoalStatusIndicator>,
+     pub(super) ide_context_active: bool,
+     pub(super) status_line_value: Option<Line<'static>>,
++    pub(super) status_provider_lines: Vec<Line<'static>>,
+     pub(super) status_line_hyperlink_url: Option<String>,
+     pub(super) status_line_enabled: bool,
+     pub(super) side_conversation_context_label: Option<String>,
+--- a/codex-rs/tui/src/bottom_pane/mod.rs
++++ b/codex-rs/tui/src/bottom_pane/mod.rs
+@@ -2083,6 +2083,12 @@
+         }
+     }
+ 
++    pub(crate) fn set_status_provider_lines(&mut self, lines: Vec<Line<'static>>) {
++        if self.composer.set_status_provider_lines(lines) {
++            self.request_redraw();
++        }
++    }
++
+     pub(crate) fn set_status_line_hyperlink(&mut self, url: Option<String>) {
+         if self.composer.set_status_line_hyperlink(url) {
+             self.request_redraw();
+--- a/codex-rs/tui/src/chatwidget.rs
++++ b/codex-rs/tui/src/chatwidget.rs
+@@ -360,6 +360,7 @@
+ mod pets;
+ mod session_flow;
+ mod session_header;
++mod status_provider;
+ use self::session_header::SessionHeader;
+ mod hook_lifecycle;
+ mod hooks;
+@@ -743,6 +744,8 @@
+     session_network_proxy: Option<SessionNetworkProxyRuntime>,
+     // Shared latch so we only warn once about invalid status-line item IDs.
+     status_line_invalid_items_warned: Arc<AtomicBool>,
++    // Asynchronous project status rows rendered above the native footer.
++    status_provider: status_provider::StatusProviderState,
+     // Shared latch so we only warn once about invalid terminal-title item IDs.
+     terminal_title_invalid_items_warned: Arc<AtomicBool>,
+     // Last terminal title emitted, to avoid writing duplicate OSC updates.
+@@ -1191,6 +1194,7 @@
+             self.refresh_terminal_title();
+         }
+         self.refresh_status_line_if_workspace_headline_due();
++        self.refresh_status_provider_if_due();
+         self.refresh_thread_usage_if_settlement_due();
+     }
+ 
+--- a/codex-rs/tui/src/chatwidget/constructor.rs
++++ b/codex-rs/tui/src/chatwidget/constructor.rs
+@@ -36,6 +36,8 @@
+         let model = model.filter(|m| !m.trim().is_empty());
+         let mut config = config;
+         config.model = model.clone();
++        let status_provider =
++            status_provider::StatusProviderState::new(config.tui_status_provider.clone());
+         let prevent_idle_sleep = config.features.enabled(Feature::PreventIdleSleep);
+         let placeholder = PLACEHOLDER.to_string();
+         let side_placeholder = SIDE_PLACEHOLDER.to_string();
+@@ -243,6 +245,7 @@
+             instruction_source_paths: Vec::new(),
+             session_network_proxy: None,
+             status_line_invalid_items_warned,
++            status_provider,
+             terminal_title_invalid_items_warned,
+             last_terminal_title: None,
+             last_terminal_title_requires_action: false,
+--- a/codex-rs/tui/src/chatwidget/session_flow.rs
++++ b/codex-rs/tui/src/chatwidget/session_flow.rs
+@@ -118,6 +118,7 @@
+             .set_active_reasoning_effort_baseline(effort.as_ref());
+         self.refresh_model_display();
+         self.refresh_status_surfaces();
++        self.restart_status_provider();
+         if previous_thread_id != self.thread_id
+             && self.should_prefetch_rate_limits()
+             && (self.current_model() == crate::model_catalog::LUNA_RESERVE_MODEL
+--- a/codex-rs/tui/src/chatwidget/settings.rs
++++ b/codex-rs/tui/src/chatwidget/settings.rs
+@@ -475,6 +475,7 @@
+         self.sync_backend_banner_view();
+         self.refresh_model_display();
+         self.refresh_status_line();
++        self.request_status_provider_refresh();
+         self.refresh_open_model_picker();
+     }
+ 
+--- a/codex-rs/tui/src/chatwidget/tests/status_and_layout.rs
++++ b/codex-rs/tui/src/chatwidget/tests/status_and_layout.rs
+@@ -23,6 +23,68 @@
+         Ok(AppEvent::RefreshStatusLineWorkspaceHeadline { request_id }) => request_id,
+         event => panic!("expected workspace headline refresh, got {event:?}"),
+     }
++}
++
++#[tokio::test]
++async fn status_provider_rows_render_above_the_unchanged_native_footer() {
++    let (mut chat, _rx, _ops) = make_chatwidget_manual(/*model_override*/ None).await;
++    let width = 80;
++    let baseline_height = chat.desired_height(width);
++    let mut baseline_terminal =
++        ratatui::Terminal::new(TestBackend::new(width, baseline_height)).expect("terminal");
++    baseline_terminal
++        .draw(|frame| chat.render(frame.area(), frame.buffer_mut()))
++        .expect("render baseline");
++    let baseline = normalized_backend_snapshot(baseline_terminal.backend());
++    let baseline_footer = baseline
++        .lines()
++        .rfind(|line| !line.trim().is_empty())
++        .expect("native footer row")
++        .trim()
++        .to_string();
++
++    chat.bottom_pane.set_status_provider_lines(vec![
++        ratatui::text::Line::from("Organization: Nexus"),
++        ratatui::text::Line::from("Board: Native status"),
++    ]);
++    let provider_height = chat.desired_height(width);
++    let mut provider_terminal =
++        ratatui::Terminal::new(TestBackend::new(width, provider_height)).expect("terminal");
++    provider_terminal
++        .draw(|frame| chat.render(frame.area(), frame.buffer_mut()))
++        .expect("render provider rows");
++    let rendered = normalized_backend_snapshot(provider_terminal.backend());
++    let rendered_lines = rendered.lines().collect::<Vec<_>>();
++    let organization_row = rendered_lines
++        .iter()
++        .position(|line| line.contains("Organization: Nexus"))
++        .expect("organization row");
++    let board_row = rendered_lines
++        .iter()
++        .position(|line| line.contains("Board: Native status"))
++        .expect("board row");
++    let native_footer_row = rendered_lines
++        .iter()
++        .rposition(|line| line.trim() == baseline_footer)
++        .expect("unchanged native footer");
++
++    assert_eq!(provider_height, baseline_height.saturating_add(2));
++    assert_eq!(board_row, organization_row + 1);
++    assert!(native_footer_row > board_row);
++    insta::assert_snapshot!(
++        format!(
++            "height delta: {}\n{}\n{}\nnative footer preserved: {}",
++            provider_height.saturating_sub(baseline_height),
++            rendered_lines[organization_row].trim_matches([' ', '"']),
++            rendered_lines[board_row].trim_matches([' ', '"']),
++            native_footer_row > board_row,
++        ),
++        @r"
++    height delta: 2
++    Organization: Nexus
++    Board: Native status
++    native footer preserved: true"
++    );
+ }
+ 
+ /// Receiving a token usage update without usage clears the context indicator.
+--- a/codex-rs/tui/src/lib.rs
++++ b/codex-rs/tui/src/lib.rs
+@@ -201,6 +201,7 @@
+ mod startup_preflight;
+ mod status;
+ mod status_indicator_widget;
++mod status_provider;
+ mod streaming;
+ mod style;
+ mod task_mentions;
+--- /dev/null
++++ b/codex-rs/tui/src/chatwidget/status_provider.rs
+@@ -0,0 +1,211 @@
++//! Session-aware scheduling for the asynchronous TUI status provider.
++
++use std::time::Instant;
++
++use codex_config::types::TuiStatusProviderConfig;
++use codex_protocol::ThreadId;
++use serde::Serialize;
++use tokio::task::JoinHandle;
++
++use super::ChatWidget;
++use crate::app_event::AppEvent;
++use crate::status_provider::RuntimeStatusProviderConfig;
++use crate::status_provider::StatusProviderRunResult;
++use crate::status_provider::diagnostic_result;
++use crate::status_provider::run_status_provider;
++
++#[derive(Debug)]
++pub(super) struct StatusProviderState {
++    config: Option<RuntimeStatusProviderConfig>,
++    task: Option<JoinHandle<()>>,
++    request_id: u64,
++    next_refresh_at: Option<Instant>,
++    refresh_pending: bool,
++}
++
++impl StatusProviderState {
++    pub(super) fn new(config: Option<TuiStatusProviderConfig>) -> Self {
++        Self {
++            config: config.map(RuntimeStatusProviderConfig::from),
++            task: None,
++            request_id: 0,
++            next_refresh_at: None,
++            refresh_pending: false,
++        }
++    }
++
++    fn enabled(&self) -> bool {
++        self.config.is_some()
++    }
++
++    fn abort(&mut self) -> Option<JoinHandle<()>> {
++        let task = self.task.take();
++        if let Some(task) = task.as_ref() {
++            task.abort();
++        }
++        self.next_refresh_at = None;
++        self.refresh_pending = false;
++        task
++    }
++}
++
++impl Drop for StatusProviderState {
++    fn drop(&mut self) {
++        if let Some(task) = self.task.take() {
++            task.abort();
++        }
++    }
++}
++
++#[derive(Debug, Serialize)]
++struct StatusProviderContext<'a> {
++    session_id: String,
++    cwd: &'a str,
++    workspace: StatusProviderWorkspace<'a>,
++    model: StatusProviderModel<'a>,
++    reasoning_effort: Option<&'a str>,
++}
++
++#[derive(Debug, Serialize)]
++struct StatusProviderWorkspace<'a> {
++    current_dir: &'a str,
++}
++
++#[derive(Debug, Serialize)]
++struct StatusProviderModel<'a> {
++    id: &'a str,
++    display_name: &'a str,
++}
++
++impl ChatWidget {
++    pub(super) fn restart_status_provider(&mut self) {
++        let previous_task = self.status_provider.abort();
++        self.bottom_pane.set_status_provider_lines(Vec::new());
++        self.start_status_provider_refresh_after(previous_task);
++    }
++
++    pub(super) fn request_status_provider_refresh(&mut self) {
++        if !self.status_provider.enabled() || self.thread_id.is_none() {
++            return;
++        }
++        if self.status_provider.task.is_some() {
++            self.status_provider.refresh_pending = true;
++            return;
++        }
++        self.status_provider.next_refresh_at = Some(Instant::now());
++        self.refresh_status_provider_if_due();
++    }
++
++    pub(super) fn refresh_status_provider_if_due(&mut self) {
++        let due = self
++            .status_provider
++            .next_refresh_at
++            .is_some_and(|next_refresh_at| Instant::now() >= next_refresh_at);
++        if due && self.status_provider.task.is_none() {
++            self.start_status_provider_refresh();
++        }
++    }
++
++    fn start_status_provider_refresh(&mut self) {
++        self.start_status_provider_refresh_after(/*previous_task*/ None);
++    }
++
++    fn start_status_provider_refresh_after(&mut self, previous_task: Option<JoinHandle<()>>) {
++        let Some(config) = self.status_provider.config.clone() else {
++            return;
++        };
++        let Some(thread_id) = self.thread_id else {
++            return;
++        };
++        if self.status_provider.task.is_some() {
++            self.status_provider.refresh_pending = true;
++            return;
++        }
++
++        self.status_provider.next_refresh_at = None;
++        if config.command.first().is_none_or(String::is_empty) {
++            self.bottom_pane.set_status_provider_lines(
++                diagnostic_result("Status provider command is empty".to_string()).lines,
++            );
++            return;
++        }
++
++        let cwd = self
++            .current_cwd
++            .as_deref()
++            .unwrap_or_else(|| self.config.cwd.as_path())
++            .to_path_buf();
++        let cwd_display = cwd.display().to_string();
++        let model = self.current_model().to_string();
++        let reasoning_effort = self
++            .effective_reasoning_effort()
++            .map(|effort| effort.as_str().to_string());
++        let context = StatusProviderContext {
++            session_id: thread_id.to_string(),
++            cwd: &cwd_display,
++            workspace: StatusProviderWorkspace {
++                current_dir: &cwd_display,
++            },
++            model: StatusProviderModel {
++                id: &model,
++                display_name: &model,
++            },
++            reasoning_effort: reasoning_effort.as_deref(),
++        };
++        let input = match serde_json::to_vec(&context) {
++            Ok(input) => input,
++            Err(err) => {
++                self.bottom_pane.set_status_provider_lines(
++                    diagnostic_result(format!("Status provider input failed: {err}")).lines,
++                );
++                return;
++            }
++        };
++
++        let request_id = self.status_provider.request_id;
++        self.status_provider.request_id = request_id.wrapping_add(1);
++        let app_event_tx = self.app_event_tx.clone();
++        let task = tokio::spawn(async move {
++            if let Some(previous_task) = previous_task {
++                let _ = previous_task.await;
++            }
++            let result =
++                run_status_provider(&config, &cwd, &input, &model, reasoning_effort.as_deref())
++                    .await;
++            app_event_tx.send(AppEvent::StatusProviderFinished {
++                thread_id,
++                request_id,
++                result,
++            });
++        });
++        self.status_provider.task = Some(task);
++    }
++
++    pub(crate) fn finish_status_provider_refresh(
++        &mut self,
++        thread_id: ThreadId,
++        request_id: u64,
++        result: StatusProviderRunResult,
++    ) -> bool {
++        if self.thread_id != Some(thread_id)
++            || self.status_provider.task.is_none()
++            || self.status_provider.request_id.wrapping_sub(1) != request_id
++        {
++            return false;
++        }
++
++        self.status_provider.task.take();
++        self.bottom_pane.set_status_provider_lines(result.lines);
++        if self.status_provider.refresh_pending {
++            self.status_provider.refresh_pending = false;
++            self.status_provider.next_refresh_at = Some(Instant::now());
++            self.refresh_status_provider_if_due();
++        } else if let Some(config) = self.status_provider.config.as_ref() {
++            self.status_provider.next_refresh_at =
++                Instant::now().checked_add(config.refresh_interval);
++            self.frame_requester
++                .schedule_frame_in(config.refresh_interval);
++        }
++        true
++    }
++}
+--- /dev/null
++++ b/codex-rs/tui/src/status_provider.rs
+@@ -0,0 +1,368 @@
++//! Bounded asynchronous command provider for project-specific TUI status rows.
++
++use std::io::ErrorKind;
++use std::path::Path;
++use std::process::Stdio;
++use std::time::Duration;
++
++use codex_config::types::TuiStatusProviderAnsi;
++use codex_config::types::TuiStatusProviderConfig;
++use ratatui::style::Stylize;
++use ratatui::text::Line;
++use tokio::io::AsyncRead;
++use tokio::io::AsyncReadExt;
++use tokio::io::AsyncWriteExt;
++use tokio::process::Child;
++use tokio::process::Command;
++use tokio::task::JoinHandle;
++
++const MIN_REFRESH_INTERVAL_MS: u64 = 250;
++const MAX_REFRESH_INTERVAL_MS: u64 = 60_000;
++const MIN_TIMEOUT_MS: u64 = 50;
++const MAX_TIMEOUT_MS: u64 = 60_000;
++const MIN_MAX_LINES: usize = 1;
++const MAX_MAX_LINES: usize = 4;
++const OUTPUT_BYTES_CAP: usize = 16 * 1024;
++pub(crate) const STATUS_PROVIDER_FEATURE_MARKER: &str = "native-status-provider-v1";
++
++#[derive(Clone, Debug)]
++pub(crate) struct RuntimeStatusProviderConfig {
++    pub(crate) command: Vec<String>,
++    pub(crate) refresh_interval: Duration,
++    pub(crate) timeout: Duration,
++    pub(crate) timeout_ms: u64,
++    pub(crate) max_lines: usize,
++    pub(crate) ansi: TuiStatusProviderAnsi,
++}
++
++impl From<TuiStatusProviderConfig> for RuntimeStatusProviderConfig {
++    fn from(config: TuiStatusProviderConfig) -> Self {
++        let refresh_interval_ms = config
++            .refresh_interval_ms
++            .clamp(MIN_REFRESH_INTERVAL_MS, MAX_REFRESH_INTERVAL_MS);
++        let timeout_ms = config.timeout_ms.clamp(MIN_TIMEOUT_MS, MAX_TIMEOUT_MS);
++        Self {
++            command: config.command,
++            refresh_interval: Duration::from_millis(refresh_interval_ms),
++            timeout: Duration::from_millis(timeout_ms),
++            timeout_ms,
++            max_lines: config.max_lines.clamp(MIN_MAX_LINES, MAX_MAX_LINES),
++            ansi: config.ansi,
++        }
++    }
++}
++
++#[derive(Clone, Debug)]
++pub(crate) struct StatusProviderRunResult {
++    pub(crate) lines: Vec<Line<'static>>,
++}
++
++pub(crate) async fn run_status_provider(
++    config: &RuntimeStatusProviderConfig,
++    cwd: &Path,
++    input: &[u8],
++    model: &str,
++    reasoning_effort: Option<&str>,
++) -> StatusProviderRunResult {
++    let Some(program) = config.command.first().filter(|program| !program.is_empty()) else {
++        return diagnostic_result("Status provider command is empty".to_string());
++    };
++    let mut command = Command::new(program);
++    command
++        .args(&config.command[1..])
++        .current_dir(cwd)
++        .env("CODEX_THREAD_ID", context_session_id(input))
++        .env("CODEX_PROJECT_DIR", cwd)
++        .env("CODEX_MODEL", model)
++        .stdin(Stdio::piped())
++        .stdout(Stdio::piped())
++        .stderr(Stdio::piped())
++        .kill_on_drop(true);
++    if let Some(reasoning_effort) = reasoning_effort {
++        command.env("CODEX_REASONING_EFFORT", reasoning_effort);
++    } else {
++        command.env_remove("CODEX_REASONING_EFFORT");
++    }
++    #[cfg(unix)]
++    command.process_group(0);
++
++    let mut child = match command.spawn() {
++        Ok(child) => child,
++        Err(err) => return diagnostic_result(format!("Status provider failed to start: {err}")),
++    };
++    let process_id = child.id();
++    let stdout = child.stdout.take();
++    let stderr = child.stderr.take();
++    let mut process = StatusProviderProcess {
++        child,
++        process_id,
++        stdout_task: Some(tokio::spawn(read_capped(stdout, OUTPUT_BYTES_CAP))),
++        stderr_task: Some(tokio::spawn(read_capped(stderr, OUTPUT_BYTES_CAP))),
++        armed: true,
++    };
++
++    let outcome = tokio::time::timeout(config.timeout, async {
++        if let Some(mut stdin) = process.child.stdin.take()
++            && let Err(err) = stdin.write_all(input).await
++            && err.kind() != ErrorKind::BrokenPipe
++        {
++            return Err(format!("Status provider input failed: {err}"));
++        }
++        let status = process
++            .child
++            .wait()
++            .await
++            .map_err(|err| format!("Status provider wait failed: {err}"))?;
++        process.kill_process_group();
++        let Some(stdout_task) = process.stdout_task.as_mut() else {
++            return Err("Status provider stdout task is missing".to_string());
++        };
++        let Some(stderr_task) = process.stderr_task.as_mut() else {
++            return Err("Status provider stderr task is missing".to_string());
++        };
++        let (stdout, stderr) = tokio::join!(
++            join_capped_output(stdout_task),
++            join_capped_output(stderr_task)
++        );
++        Ok::<_, String>((status, stdout?, stderr?))
++    })
++    .await;
++    let (status, stdout, stderr) = match outcome {
++        Ok(Ok(result)) => {
++            process.disarm();
++            result
++        }
++        Ok(Err(message)) => {
++            process.terminate();
++            return diagnostic_result(message);
++        }
++        Err(_) => {
++            process.terminate();
++            return diagnostic_result(format!(
++                "Status provider timed out after {} ms",
++                config.timeout_ms
++            ));
++        }
++    };
++    if !status.success() {
++        let detail =
++            first_diagnostic_line(&stderr.bytes).or_else(|| first_diagnostic_line(&stdout.bytes));
++        let exit = status
++            .code()
++            .map_or_else(|| "signal".to_string(), |code| code.to_string());
++        let message = detail.map_or_else(
++            || format!("Status provider failed (exit {exit})"),
++            |detail| format!("Status provider failed (exit {exit}): {detail}"),
++        );
++        return diagnostic_result(message);
++    }
++
++    output_result(&stdout, config.max_lines, config.ansi)
++}
++
++fn context_session_id(input: &[u8]) -> String {
++    serde_json::from_slice::<serde_json::Value>(input)
++        .ok()
++        .and_then(|value| value.get("session_id")?.as_str().map(str::to_string))
++        .unwrap_or_default()
++}
++
++struct StatusProviderProcess {
++    child: Child,
++    process_id: Option<u32>,
++    stdout_task: Option<JoinHandle<std::io::Result<CappedOutput>>>,
++    stderr_task: Option<JoinHandle<std::io::Result<CappedOutput>>>,
++    armed: bool,
++}
++
++impl StatusProviderProcess {
++    fn kill_process_group(&mut self) {
++        let Some(process_id) = self.process_id.take() else {
++            return;
++        };
++        #[cfg(all(unix, not(target_os = "macos")))]
++        let _ = codex_utils_pty::process_group::kill_process_group(process_id);
++        #[cfg(target_os = "macos")]
++        let _ = codex_utils_pty::process_group::kill_process_group_with_member_fallback(process_id);
++        #[cfg(not(unix))]
++        let _ = process_id;
++    }
++
++    fn abort_readers(&mut self) {
++        if let Some(task) = self.stdout_task.take() {
++            task.abort();
++        }
++        if let Some(task) = self.stderr_task.take() {
++            task.abort();
++        }
++    }
++
++    fn terminate(&mut self) {
++        self.kill_process_group();
++        let _ = self.child.start_kill();
++        self.abort_readers();
++        self.armed = false;
++    }
++
++    fn disarm(&mut self) {
++        self.process_id = None;
++        self.armed = false;
++    }
++}
++
++impl Drop for StatusProviderProcess {
++    fn drop(&mut self) {
++        if !self.armed {
++            return;
++        }
++        self.kill_process_group();
++        let _ = self.child.start_kill();
++        self.abort_readers();
++    }
++}
++
++#[derive(Debug, Default)]
++struct CappedOutput {
++    bytes: Vec<u8>,
++    truncated: bool,
++}
++
++async fn read_capped<R>(reader: Option<R>, cap: usize) -> std::io::Result<CappedOutput>
++where
++    R: AsyncRead + Unpin + Send + 'static,
++{
++    let Some(mut reader) = reader else {
++        return Ok(CappedOutput::default());
++    };
++    let mut output = CappedOutput::default();
++    let mut buffer = [0_u8; 4096];
++    loop {
++        let count = reader.read(&mut buffer).await?;
++        if count == 0 {
++            break;
++        }
++        let remaining = cap.saturating_sub(output.bytes.len());
++        let captured = remaining.min(count);
++        output.bytes.extend_from_slice(&buffer[..captured]);
++        output.truncated |= captured < count;
++    }
++    Ok(output)
++}
++
++async fn join_capped_output(
++    task: &mut JoinHandle<std::io::Result<CappedOutput>>,
++) -> Result<CappedOutput, String> {
++    match task.await {
++        Ok(Ok(output)) => Ok(output),
++        Ok(Err(err)) => Err(format!("Status provider output read failed: {err}")),
++        Err(err) => Err(format!("Status provider output task failed: {err}")),
++    }
++}
++
++fn output_result(
++    output: &CappedOutput,
++    max_lines: usize,
++    ansi: TuiStatusProviderAnsi,
++) -> StatusProviderRunResult {
++    let text = String::from_utf8_lossy(&output.bytes);
++    let preserve_sgr = ansi == TuiStatusProviderAnsi::Sgr;
++    let mut lines = text
++        .lines()
++        .take(max_lines)
++        .map(|line| {
++            let sanitized = sanitize_ansi(line, preserve_sgr);
++            codex_ansi_escape::ansi_escape_line(&sanitized)
++        })
++        .collect::<Vec<_>>();
++    if output.truncated
++        && let Some(last) = lines.last_mut()
++    {
++        last.push_span("…".dim());
++    }
++    StatusProviderRunResult { lines }
++}
++
++pub(crate) fn diagnostic_result(message: String) -> StatusProviderRunResult {
++    StatusProviderRunResult {
++        lines: vec![
++            Line::from(format!(
++                "{STATUS_PROVIDER_FEATURE_MARKER}: {}",
++                sanitize_ansi(&message, /*preserve_sgr*/ false)
++            ))
++            .red(),
++        ],
++    }
++}
++
++fn first_diagnostic_line(bytes: &[u8]) -> Option<String> {
++    let text = String::from_utf8_lossy(bytes);
++    let line = text.lines().find(|line| !line.trim().is_empty())?;
++    let line = sanitize_ansi(line, /*preserve_sgr*/ false);
++    Some(line.chars().take(240).collect())
++}
++
++/// Removes terminal control sequences while optionally preserving valid CSI SGR sequences.
++fn sanitize_ansi(input: &str, preserve_sgr: bool) -> String {
++    let bytes = input.as_bytes();
++    let mut output = String::with_capacity(input.len());
++    let mut index = 0;
++    while index < bytes.len() {
++        if bytes[index] == 0x1b {
++            let start = index;
++            index += 1;
++            if bytes.get(index) == Some(&b'[') {
++                index += 1;
++                let params_start = index;
++                while index < bytes.len() && !(0x40..=0x7e).contains(&bytes[index]) {
++                    index += 1;
++                }
++                if index < bytes.len() {
++                    let final_byte = bytes[index];
++                    let params = &bytes[params_start..index];
++                    index += 1;
++                    let valid_params = params
++                        .iter()
++                        .all(|byte| byte.is_ascii_digit() || matches!(byte, b';' | b':'));
++                    if preserve_sgr && final_byte == b'm' && valid_params {
++                        output.push_str(&input[start..index]);
++                    }
++                }
++                continue;
++            }
++            if bytes.get(index) == Some(&b']') {
++                index += 1;
++                while index < bytes.len() {
++                    if bytes[index] == 0x07 {
++                        index += 1;
++                        break;
++                    }
++                    if bytes[index] == 0x1b && bytes.get(index + 1) == Some(&b'\\') {
++                        index += 2;
++                        break;
++                    }
++                    index += 1;
++                }
++                continue;
++            }
++            if let Some(ch) = input[index..].chars().next() {
++                index += ch.len_utf8();
++            }
++            continue;
++        }
++
++        let Some(ch) = input[index..].chars().next() else {
++            break;
++        };
++        index += ch.len_utf8();
++        if ch == '\t' {
++            output.push_str("    ");
++        } else if !ch.is_control() {
++            output.push(ch);
++        }
++    }
++    output
++}
++
++#[cfg(test)]
++#[path = "status_provider_tests.rs"]
++mod tests;
+--- /dev/null
++++ b/codex-rs/tui/src/status_provider_tests.rs
+@@ -0,0 +1,276 @@
++use super::*;
++use std::time::Instant;
++
++fn provider_config(
++    command: Vec<String>,
++    timeout_ms: u64,
++    max_lines: usize,
++    ansi: TuiStatusProviderAnsi,
++) -> RuntimeStatusProviderConfig {
++    RuntimeStatusProviderConfig::from(TuiStatusProviderConfig {
++        command,
++        refresh_interval_ms: 5_000,
++        timeout_ms,
++        max_lines,
++        ansi,
++    })
++}
++
++fn line_text(line: &Line<'_>) -> String {
++    line.spans
++        .iter()
++        .map(|span| span.content.as_ref())
++        .collect()
++}
++
++#[test]
++fn runtime_config_clamps_all_numeric_bounds() {
++    let config = provider_config(
++        Vec::new(),
++        u64::MAX,
++        usize::MAX,
++        TuiStatusProviderAnsi::Strip,
++    );
++    assert_eq!(config.refresh_interval, Duration::from_millis(5_000));
++    assert_eq!(config.timeout, Duration::from_millis(MAX_TIMEOUT_MS));
++    assert_eq!(config.timeout_ms, MAX_TIMEOUT_MS);
++    assert_eq!(config.max_lines, MAX_MAX_LINES);
++
++    let config = RuntimeStatusProviderConfig::from(TuiStatusProviderConfig {
++        command: Vec::new(),
++        refresh_interval_ms: 0,
++        timeout_ms: 0,
++        max_lines: 0,
++        ansi: TuiStatusProviderAnsi::Strip,
++    });
++    assert_eq!(
++        config.refresh_interval,
++        Duration::from_millis(MIN_REFRESH_INTERVAL_MS)
++    );
++    assert_eq!(config.timeout, Duration::from_millis(MIN_TIMEOUT_MS));
++    assert_eq!(config.max_lines, MIN_MAX_LINES);
++}
++
++#[test]
++fn output_is_bounded_by_rows_and_bytes() {
++    let result = output_result(
++        &CappedOutput {
++            bytes: b"one\ntwo\nthree\n".to_vec(),
++            truncated: true,
++        },
++        2,
++        TuiStatusProviderAnsi::Strip,
++    );
++    assert_eq!(result.lines.len(), 2);
++    assert_eq!(line_text(&result.lines[0]), "one");
++    assert_eq!(line_text(&result.lines[1]), "two…");
++}
++
++#[tokio::test]
++async fn output_reader_drains_input_but_retains_only_the_byte_cap() {
++    let input = std::io::Cursor::new(b"abcdefgh".to_vec());
++    let output = read_capped(Some(input), 4).await.expect("read output");
++
++    assert_eq!(output.bytes, b"abcd");
++    assert!(output.truncated);
++}
++
++#[tokio::test]
++async fn timed_out_output_join_retains_handle_for_cancellation() {
++    struct PendingReader(std::sync::Arc<std::sync::atomic::AtomicBool>);
++
++    impl AsyncRead for PendingReader {
++        fn poll_read(
++            self: std::pin::Pin<&mut Self>,
++            _cx: &mut std::task::Context<'_>,
++            _buf: &mut tokio::io::ReadBuf<'_>,
++        ) -> std::task::Poll<std::io::Result<()>> {
++            std::task::Poll::Pending
++        }
++    }
++
++    impl Drop for PendingReader {
++        fn drop(&mut self) {
++            self.0.store(true, std::sync::atomic::Ordering::SeqCst);
++        }
++    }
++
++    let dropped = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
++    let mut task = tokio::spawn(read_capped(Some(PendingReader(dropped.clone())), 1));
++    let outcome =
++        tokio::time::timeout(Duration::from_millis(10), join_capped_output(&mut task)).await;
++
++    assert!(outcome.is_err());
++    assert!(!task.is_finished());
++    task.abort();
++    let _ = task.await;
++    assert!(dropped.load(std::sync::atomic::Ordering::SeqCst));
++}
++
++#[test]
++fn sanitizer_preserves_only_sgr_when_enabled() {
++    let input = "\u{1b}[31mred\u{1b}[0m\u{1b}]0;title\u{7}\u{1b}[2J ok\tend\n";
++    assert_eq!(sanitize_ansi(input, false), "red ok    end");
++    assert_eq!(
++        sanitize_ansi(input, true),
++        "\u{1b}[31mred\u{1b}[0m ok    end"
++    );
++}
++
++#[test]
++fn sanitizer_handles_escape_followed_by_non_ascii_without_panicking() {
++    assert_eq!(sanitize_ansi("before\u{1b}éafter", false), "beforeafter");
++}
++
++#[cfg(unix)]
++#[tokio::test]
++async fn provider_receives_real_context_on_stdin_and_environment() {
++    let cwd = tempfile::tempdir().expect("tempdir");
++    let context = br#"{"session_id":"00000000-0000-0000-0000-000000000123","cwd":"/tmp/project","workspace":{"current_dir":"/tmp/project"},"model":{"id":"gpt-test","display_name":"gpt-test"},"reasoning_effort":"high"}"#;
++    let config = provider_config(
++        vec![
++            "/bin/sh".to_string(),
++            "-c".to_string(),
++            "printf '%s|%s|%s|%s\\n' \"$CODEX_THREAD_ID\" \"$CODEX_PROJECT_DIR\" \"$CODEX_MODEL\" \"$CODEX_REASONING_EFFORT\"; cat"
++                .to_string(),
++        ],
++        2_000,
++        2,
++        TuiStatusProviderAnsi::Strip,
++    );
++    let result = run_status_provider(&config, cwd.path(), context, "gpt-test", Some("high")).await;
++
++    assert_eq!(result.lines.len(), 2);
++    let env_line = line_text(&result.lines[0]);
++    assert!(env_line.starts_with("00000000-0000-0000-0000-000000000123|"));
++    assert!(env_line.ends_with("|gpt-test|high"));
++    assert_eq!(
++        line_text(&result.lines[1]),
++        String::from_utf8_lossy(context)
++    );
++}
++
++#[cfg(unix)]
++#[tokio::test]
++async fn provider_failure_surfaces_bounded_stderr() {
++    let cwd = tempfile::tempdir().expect("tempdir");
++    let config = provider_config(
++        vec![
++            "/bin/sh".to_string(),
++            "-c".to_string(),
++            "printf '\\033]0;bad\\007failure detail\\n' >&2; exit 7".to_string(),
++        ],
++        2_000,
++        2,
++        TuiStatusProviderAnsi::Sgr,
++    );
++    let result = run_status_provider(&config, cwd.path(), b"{}", "gpt-test", None).await;
++
++    assert_eq!(result.lines.len(), 1);
++    assert_eq!(
++        line_text(&result.lines[0]),
++        "native-status-provider-v1: Status provider failed (exit 7): failure detail"
++    );
++}
++
++#[cfg(unix)]
++#[tokio::test]
++async fn provider_timeout_is_bounded_and_visible() {
++    let cwd = tempfile::tempdir().expect("tempdir");
++    let config = provider_config(
++        vec![
++            "/bin/sh".to_string(),
++            "-c".to_string(),
++            "sleep 5".to_string(),
++        ],
++        50,
++        2,
++        TuiStatusProviderAnsi::Strip,
++    );
++    let started = Instant::now();
++    let result = run_status_provider(&config, cwd.path(), b"{}", "gpt-test", None).await;
++
++    assert!(started.elapsed() < Duration::from_secs(1));
++    assert_eq!(
++        line_text(&result.lines[0]),
++        "native-status-provider-v1: Status provider timed out after 50 ms"
++    );
++}
++
++#[cfg(unix)]
++#[tokio::test]
++async fn provider_cleans_up_descendants_that_hold_output_pipes() {
++    let cwd = tempfile::tempdir().expect("tempdir");
++    let config = provider_config(
++        vec![
++            "/bin/sh".to_string(),
++            "-c".to_string(),
++            "(sleep 5) & printf 'done\\n'; exit 0".to_string(),
++        ],
++        500,
++        2,
++        TuiStatusProviderAnsi::Strip,
++    );
++    let started = Instant::now();
++    let result = run_status_provider(&config, cwd.path(), b"{}", "gpt-test", None).await;
++
++    assert!(started.elapsed() < Duration::from_secs(1));
++    assert_eq!(line_text(&result.lines[0]), "done");
++}
++
++#[cfg(unix)]
++#[tokio::test]
++async fn aborting_provider_refresh_kills_its_process_group() {
++    let cwd = tempfile::tempdir().expect("tempdir");
++    let pid_file = cwd.path().join("child.pid");
++    let config = provider_config(
++        vec![
++            "/bin/sh".to_string(),
++            "-c".to_string(),
++            "sleep 5 & echo $! > \"$1\"; wait".to_string(),
++            "status-provider-test".to_string(),
++            pid_file.display().to_string(),
++        ],
++        5_000,
++        2,
++        TuiStatusProviderAnsi::Strip,
++    );
++    let cwd_path = cwd.path().to_path_buf();
++    let task = tokio::spawn(async move {
++        run_status_provider(&config, &cwd_path, b"{}", "gpt-test", None).await
++    });
++
++    let child_pid = loop {
++        if let Ok(contents) = std::fs::read_to_string(&pid_file)
++            && let Ok(pid) = contents.trim().parse::<u32>()
++        {
++            break pid;
++        }
++        assert!(
++            !task.is_finished(),
++            "provider exited before recording child pid"
++        );
++        tokio::time::sleep(Duration::from_millis(10)).await;
++    };
++    task.abort();
++    let _ = task.await;
++
++    let child_gone = async {
++        loop {
++            let alive = std::process::Command::new("/bin/kill")
++                .args(["-0", &child_pid.to_string()])
++                .status()
++                .is_ok_and(|status| status.success());
++            if !alive {
++                break true;
++            }
++            tokio::time::sleep(Duration::from_millis(10)).await;
++        }
++    };
++    assert!(
++        tokio::time::timeout(Duration::from_secs(1), child_gone)
++            .await
++            .unwrap_or(false),
++        "provider child {child_pid} survived task cancellation"
++    );
++}
+

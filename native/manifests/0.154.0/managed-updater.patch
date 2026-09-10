@@ -1,0 +1,870 @@
+--- a/codex-rs/install-context/Cargo.toml
++++ b/codex-rs/install-context/Cargo.toml
+@@ -13,6 +13,8 @@
+ workspace = true
+ 
+ [dependencies]
++libc = { workspace = true }
++sha2 = { workspace = true }
+ codex-utils-absolute-path = { workspace = true }
+ codex-utils-home-dir = { workspace = true }
+ semver = { workspace = true, features = ["serde"] }
+--- a/codex-rs/install-context/src/lib.rs
++++ b/codex-rs/install-context/src/lib.rs
+@@ -1,3 +1,4 @@
++pub mod cue_update;
+ use std::ffi::OsStr;
+ use std::path::Path;
+ use std::path::PathBuf;
+@@ -104,7 +105,12 @@
+         codex_home: Option<&Path>,
+     ) -> Self {
+         let package_layout = current_exe.and_then(CodexPackageLayout::from_exe);
+-        let method = if let Some(method) = method_override {
++        let claimed = package_layout.as_ref().is_some_and(|layout| {
++            !matches!(cue_update::discover(layout.package_dir.as_path()), Ok(None))
++        });
++        let method = if claimed {
++            InstallMethod::Other
++        } else if let Some(method) = method_override {
+             method
+         } else if let Some(exe_path) = current_exe {
+             install_method_from_exe(exe_path, codex_home, package_layout.as_ref(), is_macos)
+@@ -115,6 +121,13 @@
+         Self {
+             method,
+             package_layout,
++        }
++    }
++
++    pub fn cue_updater(&self) -> Result<Option<cue_update::CueUpdater>, String> {
++        match &self.package_layout {
++            Some(layout) => cue_update::discover(layout.package_dir.as_path()),
++            None => Ok(None),
+         }
+     }
+ 
+@@ -273,7 +286,9 @@
+             return None;
+         }
+         let package_dir = bin_dir.parent()?;
+-        if !package_dir.join(PACKAGE_METADATA_FILENAME).is_file() {
++        if !package_dir.join(PACKAGE_METADATA_FILENAME).is_file()
++            && !cue_update::is_private_package(package_dir.as_path())
++        {
+             return None;
+         }
+ 
+@@ -885,7 +900,8 @@
+     fn brew_is_detected_on_macos_prefixes() {
+         let context = InstallContext::from_exe_with_codex_home(
+             /*is_macos*/ true,
+-            /*current_exe*/ Some(Path::new("/opt/homebrew/bin/codex")),
++            /*current_exe*/
++            Some(Path::new("/opt/homebrew/cue-nonexistent-fixture/bin/codex")),
+             /*method_override*/ None,
+             /*codex_home*/ None,
+         );
+--- /dev/null
++++ b/codex-rs/install-context/src/cue_update.rs
+@@ -0,0 +1,583 @@
++//! Converter-owned update policy. Only installed package metadata grants ownership.
++use serde::{Deserialize, Serialize};
++use sha2::{Digest, Sha256};
++use std::fs;
++use std::io::Read;
++use std::path::{Component, Path, PathBuf};
++use std::process::{Command, Stdio};
++use std::sync::{Mutex, OnceLock};
++use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
++
++const MAX_MANIFEST: u64 = 65536;
++const MAX_OUTPUT: usize = 65536;
++const CHECK_TIMEOUT: Duration = Duration::from_secs(10);
++const CACHE_SECONDS: u64 = 1200;
++static CHECKING: OnceLock<Mutex<std::collections::HashSet<PathBuf>>> = OnceLock::new();
++
++#[derive(Clone, Debug)]
++pub struct CueUpdater {
++    pub manifest: PathBuf,
++    pub program: PathBuf,
++    sha256: String,
++    manifest_sha256: String,
++}
++#[derive(Deserialize)]
++#[serde(rename_all = "camelCase")]
++struct Declaration {
++    schema_version: u32,
++    program: String,
++    sha256: String,
++}
++#[derive(Deserialize)]
++#[serde(rename_all = "camelCase")]
++struct Envelope {
++    cue_update: Option<Declaration>,
++    manager: Option<String>,
++}
++#[derive(Clone, Debug, Deserialize, Serialize, PartialEq, Eq)]
++#[serde(rename_all = "snake_case")]
++pub enum UpdateState {
++    Current,
++    UpdateAvailable,
++    NoCompatibleUpdate,
++}
++#[derive(Clone, Debug, Deserialize, Serialize)]
++#[serde(rename_all = "camelCase", deny_unknown_fields)]
++pub struct UpdateCheck {
++    pub state: UpdateState,
++    pub version: String,
++    pub release_id: String,
++    pub installed_release_id: String,
++}
++impl UpdateCheck {
++    pub fn available(&self) -> bool {
++        self.state == UpdateState::UpdateAvailable && self.release_id != self.installed_release_id
++    }
++    pub fn display(&self) -> Option<String> {
++        self.available()
++            .then(|| format!("{} (Cue {})", self.version, self.release_id))
++    }
++}
++
++/// Errors are ownership claims that cannot safely select any stock update route.
++pub fn is_private_package(package: &Path) -> bool {
++    package
++        .file_name()
++        .and_then(|n| n.to_str())
++        .is_some_and(|n| n.starts_with(".cue-codex-runtime-"))
++}
++
++pub fn discover(package: &Path) -> Result<Option<CueUpdater>, String> {
++    std::hint::black_box("CUE_MANAGED_UPDATE_V1");
++    let manifest = package.join("codex-package.json");
++    let metadata = fs::metadata(&manifest)
++        .map_err(|e| format!("cannot inspect installed package manifest: {e}"))?;
++    if !metadata.is_file() || metadata.len() > MAX_MANIFEST {
++        return Err("invalid installed package manifest size/type".into());
++    }
++    let bytes = fs::read(&manifest).map_err(|e| e.to_string())?;
++    let envelope: Envelope = serde_json::from_slice(&bytes)
++        .map_err(|e| format!("invalid installed ownership metadata: {e}"))?;
++    let value: serde_json::Value = serde_json::from_slice(&bytes)
++        .map_err(|e| format!("invalid installed package manifest: {e}"))?;
++    let Some(_raw) = value.get("cueUpdate") else {
++        if envelope.manager.as_deref() == Some("claude-codex-converter")
++            || is_private_package(package)
++        {
++            return Err("converter-owned package is missing cueUpdate".into());
++        }
++        return Ok(None);
++    };
++    let declaration = envelope
++        .cue_update
++        .ok_or("invalid null cueUpdate ownership")?;
++    if declaration.schema_version != 1 {
++        return Err("unsupported cueUpdate schemaVersion".into());
++    }
++    if declaration.sha256.len() != 64 || !declaration.sha256.bytes().all(|b| b.is_ascii_hexdigit())
++    {
++        return Err("invalid updater SHA-256".into());
++    }
++    let relative = Path::new(&declaration.program);
++    if relative.is_absolute()
++        || !relative
++            .components()
++            .all(|c| matches!(c, Component::Normal(_)))
++        || relative.components().next()
++            != Some(Component::Normal(std::ffi::OsStr::new("codex-resources")))
++    {
++        return Err("updater must be package-relative under codex-resources".into());
++    }
++    let root = fs::canonicalize(package).map_err(|e| e.to_string())?;
++    let canonical_manifest = fs::canonicalize(&manifest).map_err(|e| e.to_string())?;
++    if !canonical_manifest.starts_with(&root) {
++        return Err("installed manifest escapes package".into());
++    }
++    let program = fs::canonicalize(root.join(relative))
++        .map_err(|e| format!("declared updater unavailable: {e}"))?;
++    if !program.starts_with(root.join("codex-resources")) {
++        return Err("updater escapes package resources".into());
++    }
++    let updater = CueUpdater {
++        manifest: canonical_manifest,
++        program,
++        sha256: declaration.sha256.to_lowercase(),
++        manifest_sha256: format!("{:x}", Sha256::digest(&bytes)),
++    };
++    updater.verify()?;
++    Ok(Some(updater))
++}
++impl CueUpdater {
++    fn verify(&self) -> Result<(), String> {
++        let stamp = format!(
++            "{:x}",
++            Sha256::digest(fs::read(&self.manifest).map_err(|e| e.to_string())?)
++        );
++        if stamp != self.manifest_sha256 {
++            return Err("installed ownership metadata changed; recheck updater".into());
++        }
++        let metadata = fs::metadata(&self.program).map_err(|e| e.to_string())?;
++        if !metadata.is_file() {
++            return Err("updater is not a regular executable".into());
++        }
++        #[cfg(unix)]
++        {
++            use std::os::unix::fs::PermissionsExt;
++            if metadata.permissions().mode() & 0o111 == 0 {
++                return Err("updater is not executable".into());
++            }
++        }
++        let digest = format!(
++            "{:x}",
++            Sha256::digest(fs::read(&self.program).map_err(|e| e.to_string())?)
++        );
++        if digest != self.sha256 {
++            return Err("updater SHA-256 mismatch".into());
++        }
++        Ok(())
++    }
++    pub fn command(&self, verb: &str) -> Result<Command, String> {
++        if !matches!(verb, "check" | "update") {
++            return Err("unsupported updater operation".into());
++        }
++        self.verify()?;
++        let mut cmd = Command::new(&self.program);
++        cmd.arg(verb)
++            .arg("--installation")
++            .arg(&self.manifest)
++            .current_dir(
++                self.manifest
++                    .parent()
++                    .ok_or("manifest has no package directory")?,
++            );
++        #[cfg(unix)]
++        {
++            use std::os::unix::process::CommandExt;
++            cmd.process_group(0);
++        }
++        Ok(cmd)
++    }
++    pub fn check(&self) -> Result<UpdateCheck, String> {
++        self.check_with_timeout(CHECK_TIMEOUT)
++    }
++    fn check_with_timeout(&self, timeout: Duration) -> Result<UpdateCheck, String> {
++        let mut child = self
++            .command("check")?
++            .stdin(Stdio::null())
++            .stdout(Stdio::piped())
++            .stderr(Stdio::piped())
++            .spawn()
++            .map_err(|e| e.to_string())?;
++        let (tx, rx) = std::sync::mpsc::channel();
++        let stdout = child.stdout.take().ok_or("missing stdout")?;
++        let stderr = child.stderr.take().ok_or("missing stderr")?;
++        for (is_error, mut pipe) in [
++            (false, Box::new(stdout) as Box<dyn Read + Send>),
++            (true, Box::new(stderr) as Box<dyn Read + Send>),
++        ] {
++            let tx = tx.clone();
++            std::thread::spawn(move || {
++                let mut data = Vec::new();
++                let result = pipe
++                    .by_ref()
++                    .take((MAX_OUTPUT + 1) as u64)
++                    .read_to_end(&mut data);
++                let _ = tx.send((is_error, result.map(|_| data)));
++            });
++        }
++        drop(tx);
++        let deadline = Instant::now() + timeout;
++        let mut outputs = [None, None];
++        let status = loop {
++            while let Ok((is_error, result)) = rx.try_recv() {
++                let data = match result {
++                    Ok(data) => data,
++                    Err(e) => {
++                        stop_child(&mut child);
++                        return Err(e.to_string());
++                    }
++                };
++                if data.len() > MAX_OUTPUT {
++                    stop_child(&mut child);
++                    return Err("updater check output limit exceeded".into());
++                }
++                outputs[usize::from(is_error)] = Some(data);
++            }
++            if let Some(status) = child.try_wait().map_err(|e| e.to_string())? {
++                if outputs.iter().all(Option::is_some) {
++                    break status;
++                }
++            }
++            if Instant::now() >= deadline {
++                stop_child(&mut child);
++                return Err("updater check timed out".into());
++            }
++            std::thread::sleep(Duration::from_millis(5));
++        };
++        let stderr =
++            String::from_utf8_lossy(outputs[1].as_deref().unwrap_or_default()).into_owned();
++        if !status.success() {
++            return Err(format!("updater check failed ({status}): {stderr}"));
++        }
++        if !stderr.is_empty() {
++            eprintln!("Cue updater: {stderr}");
++        }
++        let response: UpdateCheck =
++            serde_json::from_slice(outputs[0].as_deref().unwrap_or_default())
++                .map_err(|e| format!("invalid updater check JSON: {e}; stderr: {stderr}"))?;
++        for value in [
++            &response.version,
++            &response.release_id,
++            &response.installed_release_id,
++        ] {
++            if value.is_empty() || value.len() > 200 || value.chars().any(char::is_control) {
++                return Err("invalid updater response identity".into());
++            }
++        }
++        semver::Version::parse(&response.version)
++            .map_err(|e| format!("invalid updater version: {e}"))?;
++        if response.state == UpdateState::UpdateAvailable
++            && response.release_id == response.installed_release_id
++        {
++            return Err("update_available must identify a different release".into());
++        }
++        Ok(response)
++    }
++}
++fn stop_child(child: &mut std::process::Child) {
++    #[cfg(unix)]
++    unsafe {
++        libc::kill(-(child.id() as i32), libc::SIGKILL);
++    }
++    let _ = child.kill();
++    let _ = child.wait();
++}
++#[derive(Serialize, Deserialize)]
++struct CachedCheck {
++    manifest: PathBuf,
++    launcher_sha256: String,
++    manifest_sha256: String,
++    checked_at: u64,
++    result: UpdateCheck,
++    dismissed: Option<String>,
++}
++fn now() -> u64 {
++    SystemTime::now()
++        .duration_since(UNIX_EPOCH)
++        .unwrap_or_default()
++        .as_secs()
++}
++fn read_cache(path: &Path) -> Option<CachedCheck> {
++    serde_json::from_slice(&fs::read(path).ok()?).ok()
++}
++/// Separate cache prevents stock upstream metadata from advertising incompatible updates.
++pub fn cached_upgrade(updater: CueUpdater, home: &Path, popup: bool) -> Option<String> {
++    let file = home.join("cue-version.json");
++    let cached = read_cache(&file).filter(|c| {
++        c.manifest == updater.manifest
++            && c.launcher_sha256 == updater.sha256
++            && c.manifest_sha256 == updater.manifest_sha256
++    });
++    if cached
++        .as_ref()
++        .is_none_or(|c| now().saturating_sub(c.checked_at) >= CACHE_SECONDS)
++    {
++        let active = CHECKING.get_or_init(Default::default);
++        if let Ok(mut active) = active.lock()
++            && active.insert(file.clone())
++        {
++            let file = file.clone();
++            let updater = updater.clone();
++            std::thread::spawn(move || {
++                match updater.check() {
++                    Ok(result) => {
++                        let dismissed = read_cache(&file).and_then(|c| c.dismissed);
++                        let cache = CachedCheck {
++                            manifest: updater.manifest,
++                            launcher_sha256: updater.sha256,
++                            manifest_sha256: updater.manifest_sha256,
++                            checked_at: now(),
++                            result,
++                            dismissed,
++                        };
++                        let write = (|| -> Result<(), String> {
++                            fs::create_dir_all(file.parent().ok_or("cache directory missing")?)
++                                .map_err(|e| e.to_string())?;
++                            fs::write(
++                                &file,
++                                serde_json::to_vec(&cache).map_err(|e| e.to_string())?,
++                            )
++                            .map_err(|e| e.to_string())
++                        })();
++                        if let Err(error) = write {
++                            eprintln!("Cue update cache: {error}");
++                        }
++                    }
++                    Err(error) => eprintln!("Cue update check: {error}"),
++                }
++                if let Some(active) = CHECKING.get()
++                    && let Ok(mut active) = active.lock()
++                {
++                    active.remove(&file);
++                }
++            });
++        }
++    }
++    let cached = cached?;
++    if popup && cached.dismissed.as_deref() == Some(cached.result.release_id.as_str()) {
++        return None;
++    }
++    cached.result.display()
++}
++pub fn dismiss(home: &Path) -> Result<(), String> {
++    let file = home.join("cue-version.json");
++    let Some(mut cache) = read_cache(&file) else {
++        return Ok(());
++    };
++    cache.dismissed = Some(cache.result.release_id.clone());
++    fs::write(file, serde_json::to_vec(&cache).map_err(|e| e.to_string())?)
++        .map_err(|e| e.to_string())
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use serde_json::json;
++    #[cfg(unix)]
++    fn fixture(script: &str) -> (tempfile::TempDir, CueUpdater) {
++        use std::os::unix::fs::PermissionsExt;
++        let dir = tempfile::tempdir().unwrap();
++        fs::create_dir_all(dir.path().join("bin")).unwrap();
++        fs::create_dir_all(dir.path().join("codex-resources")).unwrap();
++        fs::write(dir.path().join("bin/codex"), "").unwrap();
++        let program = dir.path().join("codex-resources/cue-update");
++        fs::write(&program, format!("#!/bin/sh\n{script}\n")).unwrap();
++        fs::set_permissions(&program, fs::Permissions::from_mode(0o755)).unwrap();
++        let metadata = json!({"version":"0.153.4","manager":"claude-codex-converter","cueUpdate":{"schemaVersion":1,"program":"codex-resources/cue-update","sha256":format!("{:x}",Sha256::digest(fs::read(&program).unwrap())),"releaseId":"old"}});
++        fs::write(dir.path().join("codex-package.json"), metadata.to_string()).unwrap();
++        let updater = discover(dir.path()).unwrap().unwrap();
++        (dir, updater)
++    }
++    #[test]
++    #[cfg(unix)]
++    fn private_package_missing_or_unclaimed_manifest_stays_owned() {
++        let dir = tempfile::Builder::new()
++            .prefix(".cue-codex-runtime-test-")
++            .tempdir()
++            .unwrap();
++        fs::create_dir(dir.path().join("bin")).unwrap();
++        let exe = dir.path().join("bin/codex");
++        fs::write(&exe, "").unwrap();
++        for body in [None, Some(r#"{"version":"0.153.4"}"#)] {
++            if let Some(body) = body {
++                fs::write(dir.path().join("codex-package.json"), body).unwrap();
++            }
++            let context = super::super::InstallContext::from_exe(
++                true,
++                Some(&exe),
++                Some(super::super::InstallMethod::Brew),
++            );
++            assert_eq!(context.method, super::super::InstallMethod::Other);
++            assert!(context.cue_updater().is_err());
++        }
++    }
++    #[test]
++    fn patch_only_release_is_available_and_identity_is_not_upstream_version() {
++        let old = UpdateCheck {
++            state: UpdateState::UpdateAvailable,
++            version: "0.153.4".into(),
++            release_id: "patch2".into(),
++            installed_release_id: "patch1".into(),
++        };
++        assert_eq!(old.display().as_deref(), Some("0.153.4 (Cue patch2)"));
++        let mut next = old.clone();
++        next.release_id = "patch3".into();
++        assert_ne!(old.display(), next.display());
++        next.state = UpdateState::NoCompatibleUpdate;
++        assert_eq!(next.display(), None);
++    }
++    #[test]
++    #[cfg(unix)]
++    fn command_is_fixed_absolute_and_outside_project() {
++        let (_dir, u) = fixture("exit 0");
++        let cmd = u.command("update").unwrap();
++        assert_eq!(cmd.get_program(), u.program.as_os_str());
++        assert_eq!(
++            cmd.get_args().collect::<Vec<_>>(),
++            vec![
++                std::ffi::OsStr::new("update"),
++                std::ffi::OsStr::new("--installation"),
++                u.manifest.as_os_str()
++            ]
++        );
++        assert_eq!(cmd.get_current_dir(), u.manifest.parent());
++        assert!(u.command("other").is_err());
++    }
++    #[test]
++    #[cfg(unix)]
++    fn malformed_claims_never_regain_brew_or_manager_ownership() {
++        let (dir, _) = fixture("exit 0");
++        for body in [
++            "{",
++            r#"{"cueUpdate":null}"#,
++            r#"{"manager":"claude-codex-converter"}"#,
++            r#"{"cueUpdate":{},"cueUpdate":null}"#,
++        ] {
++            fs::write(dir.path().join("codex-package.json"), body).unwrap();
++            assert!(discover(dir.path()).is_err(), "{body}");
++            let context = super::super::InstallContext::from_exe(
++                true,
++                Some(&dir.path().join("bin/codex")),
++                Some(super::super::InstallMethod::Brew),
++            );
++            assert_eq!(context.method, super::super::InstallMethod::Other);
++            assert!(context.cue_updater().is_err());
++        }
++    }
++    #[test]
++    #[cfg(unix)]
++    fn valid_claim_precedes_brew_override_and_stock_manifest_preserved() {
++        let (dir, _) = fixture("exit 0");
++        let exe = dir.path().join("bin/codex");
++        let context = super::super::InstallContext::from_exe(
++            true,
++            Some(&exe),
++            Some(super::super::InstallMethod::Brew),
++        );
++        assert_eq!(context.method, super::super::InstallMethod::Other);
++        assert!(context.cue_updater().unwrap().is_some());
++        fs::write(
++            dir.path().join("codex-package.json"),
++            r#"{"version":"0.153.4"}"#,
++        )
++        .unwrap();
++        let ordinary = super::super::InstallContext::from_exe(
++            true,
++            Some(&exe),
++            Some(super::super::InstallMethod::Brew),
++        );
++        assert_eq!(ordinary.method, super::super::InstallMethod::Brew);
++        assert!(ordinary.cue_updater().unwrap().is_none());
++    }
++    #[test]
++    #[cfg(unix)]
++    fn hash_permission_escape_and_changed_metadata_rejected() {
++        use std::os::unix::fs::{PermissionsExt, symlink};
++        let (dir, u) = fixture("exit 0");
++        fs::write(&u.program, "modified").unwrap();
++        assert!(u.command("check").is_err());
++        let (dir2, u2) = fixture("exit 0");
++        fs::set_permissions(&u2.program, fs::Permissions::from_mode(0o644)).unwrap();
++        assert!(discover(dir2.path()).is_err());
++        let outside = dir.path().join("outside");
++        fs::write(&outside, "x").unwrap();
++        fs::remove_file(&u2.program).unwrap();
++        symlink(&outside, &u2.program).unwrap();
++        assert!(discover(dir2.path()).is_err());
++        let (dir3, u3) = fixture("exit 0");
++        let mut value: serde_json::Value =
++            serde_json::from_slice(&fs::read(&u3.manifest).unwrap()).unwrap();
++        value["cueUpdate"]["releaseId"] = "changed".into();
++        fs::write(&u3.manifest, value.to_string()).unwrap();
++        assert!(u3.command("check").is_err());
++        assert!(discover(dir3.path()).unwrap().is_some());
++    }
++    #[test]
++    #[cfg(unix)]
++    fn check_parses_json_and_preserves_diagnostics() {
++        let (_dir, u) = fixture(
++            "echo diagnostic >&2\nprintf '%s' '{\"state\":\"update_available\",\"version\":\"0.153.4\",\"releaseId\":\"patch2\",\"installedReleaseId\":\"patch1\"}'",
++        );
++        assert!(u.check().unwrap().available());
++        let (_dir, u) = fixture("echo failure-detail >&2; exit 7");
++        assert!(u.check().unwrap_err().contains("failure-detail"));
++        let (_dir, u) = fixture("printf invalid");
++        assert!(u.check().unwrap_err().contains("JSON"));
++    }
++    #[test]
++    #[cfg(unix)]
++    fn check_timeout_kills_spawned_child_group_and_bounds_output() {
++        let (dir, u) = fixture("sleep 30 &\necho $! > child.pid\nwait");
++        let started = Instant::now();
++        assert!(
++            u.check_with_timeout(Duration::from_secs(1))
++                .unwrap_err()
++                .contains("timed out")
++        );
++        assert!(started.elapsed() < Duration::from_secs(3));
++        let child: i32 = fs::read_to_string(dir.path().join("child.pid"))
++            .unwrap()
++            .trim()
++            .parse()
++            .unwrap();
++        for _ in 0..100 {
++            if unsafe { libc::kill(child, 0) } != 0 {
++                return;
++            }
++            std::thread::sleep(Duration::from_millis(10));
++        }
++        panic!("fixture child survived timeout");
++    }
++    #[test]
++    #[cfg(unix)]
++    fn oversized_check_output_is_rejected() {
++        let (_dir, u) = fixture("yes x");
++        assert!(
++            u.check_with_timeout(Duration::from_secs(2))
++                .unwrap_err()
++                .contains("output limit")
++        );
++    }
++    #[test]
++    #[cfg(unix)]
++    fn cache_dismissal_uses_release_and_invalidates_manifest_changes() {
++        let (dir, u) = fixture("exit 0");
++        let home = tempfile::tempdir().unwrap();
++        let response = UpdateCheck {
++            state: UpdateState::UpdateAvailable,
++            version: "0.153.4".into(),
++            release_id: "patch2".into(),
++            installed_release_id: "patch1".into(),
++        };
++        let mut cache = CachedCheck {
++            manifest: u.manifest.clone(),
++            launcher_sha256: u.sha256.clone(),
++            manifest_sha256: u.manifest_sha256.clone(),
++            checked_at: now(),
++            result: response,
++            dismissed: None,
++        };
++        let file = home.path().join("cue-version.json");
++        fs::write(&file, serde_json::to_vec(&cache).unwrap()).unwrap();
++        assert!(cached_upgrade(u.clone(), home.path(), true).is_some());
++        dismiss(home.path()).unwrap();
++        assert!(cached_upgrade(u.clone(), home.path(), true).is_none());
++        cache.result.release_id = "patch3".into();
++        cache.dismissed = Some("patch2".into());
++        fs::write(&file, serde_json::to_vec(&cache).unwrap()).unwrap();
++        assert!(cached_upgrade(u.clone(), home.path(), true).is_some());
++        fs::write(&u.manifest, fs::read_to_string(&u.manifest).unwrap() + " ").unwrap();
++        let newer = discover(dir.path()).unwrap().unwrap();
++        assert!(cached_upgrade(newer, home.path(), true).is_none());
++    }
++}
+--- a/codex-rs/tui/src/update_action.rs
++++ b/codex-rs/tui/src/update_action.rs
+@@ -8,6 +8,8 @@
+ /// Update action the CLI should perform after the TUI exits.
+ #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+ pub enum UpdateAction {
++    /// Use the validated updater owned by the installed converter package.
++    CueManaged,
+     /// Update via `npm install -g @openai/codex@latest`.
+     NpmGlobalLatest,
+     /// Update via `bun install -g @openai/codex@latest`.
+@@ -27,6 +29,9 @@
+ impl UpdateAction {
+     #[cfg(any(not(debug_assertions), test))]
+     pub(crate) fn from_install_context(context: &InstallContext) -> Option<Self> {
++        if !matches!(context.cue_updater(), Ok(None)) {
++            return Some(Self::CueManaged);
++        }
+         match &context.method {
+             InstallMethod::Npm => Some(UpdateAction::NpmGlobalLatest),
+             InstallMethod::Bun => Some(UpdateAction::BunGlobalLatest),
+@@ -44,6 +49,7 @@
+     /// Returns the list of command-line arguments for invoking the update.
+     pub fn command_args(self) -> (&'static str, &'static [&'static str]) {
+         match self {
++            UpdateAction::CueManaged => ("codex", &["update"]),
+             UpdateAction::NpmGlobalLatest => ("npm", &["install", "-g", "@openai/codex"]),
+             UpdateAction::BunGlobalLatest => ("bun", &["install", "-g", "@openai/codex"]),
+             UpdateAction::VitePlusGlobalLatest => ("vp", &["install", "-g", "@openai/codex"]),
+@@ -88,6 +94,25 @@
+     use pretty_assertions::assert_eq;
+ 
+     #[test]
++    fn broken_converter_claim_selects_only_managed_action() {
++        let root = tempfile::Builder::new()
++            .prefix(".cue-codex-runtime-test-")
++            .tempdir()
++            .unwrap();
++        std::fs::create_dir(root.path().join("bin")).unwrap();
++        let exe = root.path().join("bin/codex");
++        std::fs::write(&exe, "").unwrap();
++        let context = InstallContext::from_exe(true, Some(&exe), Some(InstallMethod::Brew));
++        assert_eq!(
++            UpdateAction::from_install_context(&context),
++            Some(UpdateAction::CueManaged)
++        );
++        assert_eq!(
++            UpdateAction::CueManaged.command_args(),
++            ("codex", &["update"][..])
++        );
++    }
++    #[test]
+     fn maps_install_context_to_update_action() {
+         let native_release_dir =
+             AbsolutePathBuf::from_absolute_path(std::env::temp_dir().join("native-release"))
+--- a/codex-rs/tui/src/updates.rs
++++ b/codex-rs/tui/src/updates.rs
+@@ -29,6 +29,20 @@
+         return None;
+     }
+ 
++    match codex_install_context::InstallContext::current().cue_updater() {
++        Ok(Some(updater)) => {
++            return codex_install_context::cue_update::cached_upgrade(
++                updater,
++                config.codex_home.as_path(),
++                false,
++            );
++        }
++        Err(error) => {
++            tracing::error!("Converter updater invalid: {error}");
++            return None;
++        }
++        Ok(None) => {}
++    }
+     let action = update_action::get_update_action();
+     let version_file = version_filepath(config);
+     let info = read_version_info(&version_file).ok();
+@@ -82,6 +96,9 @@
+     )
+     .with_legacy_custom_ca_fallback();
+     let latest_version = match action {
++        Some(UpdateAction::CueManaged) => {
++            anyhow::bail!("converter updates must use the installed updater")
++        }
+         Some(UpdateAction::BrewUpgrade) => {
+             let HomebrewCaskInfo { version } = client_pool
+                 .get(HOMEBREW_CASK_API_URL)
+@@ -153,6 +170,20 @@
+         return None;
+     }
+ 
++    match codex_install_context::InstallContext::current().cue_updater() {
++        Ok(Some(updater)) => {
++            return codex_install_context::cue_update::cached_upgrade(
++                updater,
++                config.codex_home.as_path(),
++                true,
++            );
++        }
++        Err(error) => {
++            tracing::error!("Converter updater invalid: {error}");
++            return None;
++        }
++        Ok(None) => {}
++    }
+     let version_file = version_filepath(config);
+     let latest = get_upgrade_version(config)?;
+     // If the user dismissed this exact version previously, do not show the popup.
+--- a/codex-rs/tui/src/updates_cache.rs
++++ b/codex-rs/tui/src/updates_cache.rs
+@@ -29,6 +29,14 @@
+ /// Persist a dismissal for the current latest version so we don't show
+ /// the update popup again for this version.
+ pub(crate) async fn dismiss_version(config: &Config, version: &str) -> anyhow::Result<()> {
++    match codex_install_context::InstallContext::current().cue_updater() {
++        Ok(Some(_)) => {
++            return codex_install_context::cue_update::dismiss(config.codex_home.as_path())
++                .map_err(anyhow::Error::msg);
++        }
++        Err(error) => anyhow::bail!("Converter updater invalid: {error}"),
++        Ok(None) => {}
++    }
+     let version_file = version_filepath(config);
+     let mut info = match read_version_info(&version_file) {
+         Ok(info) => info,
+--- a/codex-rs/cli/src/main.rs
++++ b/codex-rs/cli/src/main.rs
+@@ -893,6 +893,23 @@
+ 
+ /// Run the update action and print the result.
+ fn run_update_action(action: UpdateAction) -> anyhow::Result<()> {
++    if action == UpdateAction::CueManaged {
++        let updater = codex_install_context::InstallContext::current()
++            .cue_updater()
++            .map_err(anyhow::Error::msg)?
++            .ok_or_else(|| {
++                anyhow::anyhow!("converter updater ownership disappeared; stock updater disabled")
++            })?;
++        let status = updater
++            .command("update")
++            .map_err(anyhow::Error::msg)?
++            .status()?;
++        if !status.success() {
++            anyhow::bail!("converter update failed with {status}");
++        }
++        println!("Converter update finished. Restart Codex if a release was installed.");
++        return Ok(());
++    }
+     println!();
+     let cmd_str = action.command_str();
+     println!("Updating Codex via `{cmd_str}`...");
+--- a/codex-rs/cli/src/doctor/updates.rs
++++ b/codex-rs/cli/src/doctor/updates.rs
+@@ -53,6 +53,47 @@
+ pub(super) async fn updates_check(config: &Config) -> DoctorCheck {
+     let current_exe = std::env::current_exe().ok();
+     let install_context = doctor_install_context(current_exe.as_deref());
++    match install_context.cue_updater() {
++        Ok(Some(updater)) => {
++            return match tokio::task::spawn_blocking(move || updater.check())
++                .await
++                .map_err(|error| format!("converter updater check task failed: {error}"))
++                .and_then(|result| result)
++            {
++                Ok(info) => DoctorCheck::new(
++                    "updates.status",
++                    "updates",
++                    CheckStatus::Ok,
++                    "converter-owned update route verified",
++                )
++                .details(vec![
++                    format!("installed release: {}", info.installed_release_id),
++                    format!(
++                        "compatible candidate: {} ({})",
++                        info.version, info.release_id
++                    ),
++                    format!("update state: {:?}", info.state),
++                ]),
++                Err(error) => DoctorCheck::new(
++                    "updates.status",
++                    "updates",
++                    CheckStatus::Warning,
++                    "converter update check failed; stock fallback disabled",
++                )
++                .details(vec![error]),
++            };
++        }
++        Err(error) => {
++            return DoctorCheck::new(
++                "updates.status",
++                "updates",
++                CheckStatus::Fail,
++                "invalid converter updater; stock fallback disabled",
++            )
++            .details(vec![error]);
++        }
++        Ok(None) => {}
++    }
+     let mut details = vec![
+         format!(
+             "check for update on startup: {}",
+--- a/codex-rs/Cargo.lock
++++ b/codex-rs/Cargo.lock
+@@ -3715,10 +3715,12 @@
+ dependencies = [
+  "codex-utils-absolute-path",
+  "codex-utils-home-dir",
++ "libc",
+  "pretty_assertions",
+  "semver",
+  "serde",
+  "serde_json",
++ "sha2 0.10.9",
+  "tempfile",
+ ]
+ 

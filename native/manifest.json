@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "upstream_commit": "3d2ee51ca2d5db578f328aa75e20aa22c0197c9a",
+  "patch_sha256": "efc32de939833e59aa1c1c7fc3174dbe1d20d0374d8e4b7dd11e18cf1356316e",
+  "patch_file": "status-provider.patch",
+  "feature_marker": "native-status-provider-v1",
+  "additional_patches": [
+    {
+      "patch_file": "question-form.patch",
+      "patch_sha256": "7c6c7b783b8b1913e0e7099e5ee5a25f9df05d166d51ba4b9605db0e1b0e058c",
+      "feature_marker": "CUE_QUESTION_UI_V1"
+    },
+    {
+      "patch_file": "managed-updater.patch",
+      "patch_sha256": "e3781a7f5f92589d9baed81f205e6a32cb8f0cfac8f4a69278df6b98542e688f",
+      "feature_marker": "CUE_MANAGED_UPDATE_V1"
+    }
+  ],
+  "official_companion_packages": {
+    "darwin-arm64": {
+      "version": "0.153.4-darwin-arm64",
+      "url": "https://registry.npmjs.org/@openai/codex/-/codex-0.153.4-darwin-arm64.tgz",
+      "integrity": "sha512-B1qhN3fa1ay0R0wGziXqgwSkB5icpYChNKHhtBHff/0UtSTC7z+l8aTtvMlGjH3E8HEvY3+njIJelM9CAAoVWg=="
+    },
+    "darwin-x64": {
+      "version": "0.153.4-darwin-x64",
+      "url": "https://registry.npmjs.org/@openai/codex/-/codex-0.153.4-darwin-x64.tgz",
+      "integrity": "sha512-vnSbbPzfoDZmmyzsxswsDDXQ06IVFBzkQU7/hroB3ji93Ok2utcsq8Psfk2tjF5r9mEx8RWFJhzuTGHG26/NDA=="
+    },
+    "linux-arm64": {
+      "version": "0.153.4-linux-arm64",
+      "url": "https://registry.npmjs.org/@openai/codex/-/codex-0.153.4-linux-arm64.tgz",
+      "integrity": "sha512-QKdjYLYV4hXIuUQDP3P6F4NXuWFoKo9WUoV4nAREIx55kiUyi8UsYdsVobkeXir5n/maEQgYMCKLHVma4rNPiw=="
+    },
+    "linux-x64": {
+      "version": "0.153.4-linux-x64",
+      "url": "https://registry.npmjs.org/@openai/codex/-/codex-0.153.4-linux-x64.tgz",
+      "integrity": "sha512-x1EcwBlY3AObM1VTUHNM2AzAJQsyreGdagpF+qFiYi/Oa30VBktvvG0C6tLtCzqW6hjZNWkGZQWmeVk7MuJKWg=="
+    }
+  },
+  "release_id": "cue-native-0.3.4",
+  "release_sequence": 2
+}
