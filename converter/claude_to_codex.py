@@ -657,7 +657,7 @@ class Converter:
             if not directory.is_absolute():
                 directory = self.output / directory
             filesystem[os.path.abspath(directory)] = 'write'
-        read_paths, edit_paths = set(), set()
+        contributions = []
         for row in self.permission_rules:
             if row['action'] not in ('ask', 'deny'):
                 continue
@@ -665,7 +665,10 @@ class Converter:
             m = re.fullmatch(r'(Read|Edit)\((.+)\)', rule)
             if m:
                 p = permission_path_pattern(m[2], self.output, source_root=row['source_root'], action=row['action'])
-                (read_paths if m[1] == 'Read' else edit_paths).add(p)
+                contributions.append({'source_action': row['action'], 'source_tool': m[1],
+                                      'source_rule': rule, 'source_root': str(row['source_root']),
+                                      'native_path': p, 'contributed_access': 'deny' if m[1] == 'Read' else 'read',
+                                      'reason': 'ask-fallback' if row['action'] == 'ask' else 'source-deny'})
                 if not m[2].startswith(('/', '~/')):
                     self.finding('permission-cwd', rule,
                                  'The native filesystem fallback anchors this relative restriction at the target project. '
@@ -673,11 +676,21 @@ class Converter:
                                  'needs-runtime-test', action=row['action'])
             elif not rule.startswith(('Bash(', 'mcp__')):
                 self.finding('permission', rule, 'Tool-specific permission has no verified native mapping; retain in runtime metadata and require review.', 'manual')
+        # Preserve every source contribution before coalescing identical paths.
+        # This records provenance only; it does not change native authority.
+        read_paths = {row['native_path'] for row in contributions if row['source_tool'] == 'Read'}
+        edit_paths = {row['native_path'] for row in contributions if row['source_tool'] == 'Edit'}
         for path in sorted(read_paths):
             filesystem[path] = 'deny'
         for path in sorted(edit_paths - read_paths):
             filesystem[path] = 'read'
         config += [toml_value(path) + ' = ' + toml_value(access) for path, access in sorted(filesystem.items())]
+        self.filesystem_contributions = contributions
+        for contribution in contributions:
+            self.finding('permission-filesystem-contribution', contribution['source_rule'],
+                         'This source rule contributes a native filesystem fallback. The path entry can be more restrictive '
+                         'when other rules share it; native overlap and managed policy remain authoritative.', 'manual',
+                         **contribution, emitted_path_access=filesystem[contribution['native_path']])
         self.finding('permissions', 'effective-settings/permissions', 'Source Read ask paths become native deny entries; managed hosts can make these non-escalatable. Edit ask paths become read-only. These restrictions do not preserve source approval semantics.', 'manual')
         if edit_paths:
             self.finding('permission-edit-deny', 'effective-settings/permissions',
